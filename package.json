@@ -1,0 +1,43 @@
+{
+  "name": "rentol-campus-marketplace",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently \"npm:dev:server\" \"npm:dev:client\"",
+    "dev:server": "node --env-file=.env --watch server/index.js",
+    "dev:client": "vite --host 0.0.0.0",
+    "build": "vite build",
+    "test:stage2": "node --env-file=.env server/run-stage2-tests.js",
+    "test:auth-domain": "node --test server/email-policy.test.js",
+    "admin:create": "node --env-file=.env server/create-admin.js",
+    "start": "node --env-file=.env server/index.js",
+    "db:push": "prisma db push",
+    "db:stage2": "node --env-file=.env server/apply-stage2-migration.js",
+    "db:seed": "node server/seed.js",
+    "admin:promote": "node --env-file=.env server/promote-admin.js",
+    "postinstall": "prisma generate"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.11.1",
+    "axios": "^1.21.0",
+    "bcryptjs": "^3.0.2",
+    "cookie-parser": "^1.4.7",
+    "express": "^5.1.0",
+    "google-auth-library": "^11.3.3",
+    "lucide-react": "^0.468.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.30.1",
+    "zod": "^3.25.67"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.7.0",
+    "autoprefixer": "^10.6.2",
+    "concurrently": "^9.2.0",
+    "postcss": "^8.5.32",
+    "prisma": "^6.11.1",
+    "tailwindcss": "3.4",
+    "vite": "^5.4.19"
+  }
+}

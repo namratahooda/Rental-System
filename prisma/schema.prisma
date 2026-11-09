@@ -1,0 +1,186 @@
+generator client {
+  provider = "prisma-client-js"
+}
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+enum Role {
+  STUDENT
+  ADMIN
+}
+enum AccessStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+enum ListingType {
+  RENT
+  SELL
+}
+enum ListingStatus {
+  ACTIVE
+  PAUSED
+  REMOVED
+}
+enum Condition {
+  NEW
+  LIKE_NEW
+  GOOD
+  FAIR
+}
+enum BookingStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+  ACTIVE
+  COMPLETED
+}
+enum BookingPriceUnit {
+  DAILY
+  MONTHLY
+}
+enum NegotiationStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  DECLINED
+  CANCELLED
+}
+
+model User {
+  id           String   @id @default(cuid())
+  fullName     String
+  email        String   @unique
+  passwordHash String
+  role         Role     @default(STUDENT)
+  isApproved   Boolean  @default(true)
+  profilePhoto String?
+  college      String   @default("IIIT Allahabad")
+  department   String?
+  yearOfStudy  String?
+  contactInfo  String?
+  createdAt    DateTime @default(now())
+  listings     Listing[]
+  wishlist     Wishlist[]
+  accessRequest ExternalAccessRequest?
+  renterBookings Booking[] @relation("BookingRenter")
+  ownerBookings Booking[] @relation("BookingOwner")
+  notifications Notification[]
+}
+model ExternalAccessRequest {
+  id         String       @id @default(cuid())
+  userId     String       @unique
+  reason     String?
+  status     AccessStatus @default(PENDING)
+  reviewedAt DateTime?
+  createdAt  DateTime     @default(now())
+  user       User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+model Category {
+  id       String    @id @default(cuid())
+  name     String    @unique
+  slug     String    @unique
+  listings Listing[]
+}
+model Listing {
+  id            String        @id @default(cuid())
+  ownerId       String
+  categoryId    String
+  type          ListingType
+  title         String
+  description   String
+  quantity      Int           @default(1)
+  condition     Condition
+  dailyPrice    Float?
+  monthlyPrice  Float?
+  deposit       Float?
+  salePrice     Float?
+  pickupLocation String
+  status        ListingStatus @default(ACTIVE)
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  owner         User          @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  category      Category      @relation(fields: [categoryId], references: [id])
+  images        ListingImage[]
+  wishlistedBy  Wishlist[]
+  bookings      Booking[]
+  @@index([type, status, createdAt])
+  @@index([categoryId])
+}
+
+model Booking {
+  id              String            @id @default(cuid())
+  listingId       String
+  renterId        String
+  ownerId         String
+  startDate       DateTime
+  endDate         DateTime
+  quantity        Int
+  priceUnit       BookingPriceUnit
+  rentalUnits     Int
+  originalAmount  Int
+  agreedAmount    Int
+  status          BookingStatus     @default(PENDING)
+  renterMessage   String?
+  idempotencyKey  String?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  approvedAt      DateTime?
+  completedAt     DateTime?
+  listing         Listing           @relation(fields: [listingId], references: [id], onDelete: Restrict)
+  renter          User              @relation("BookingRenter", fields: [renterId], references: [id], onDelete: Restrict)
+  owner           User              @relation("BookingOwner", fields: [ownerId], references: [id], onDelete: Restrict)
+  negotiation     Negotiation?
+  notifications   Notification[]
+
+  @@unique([renterId, idempotencyKey])
+  @@index([listingId, status, startDate, endDate])
+  @@index([renterId, status, createdAt])
+  @@index([ownerId, status, createdAt])
+}
+
+model Negotiation {
+  id                         String            @id @default(cuid())
+  bookingId                  String            @unique
+  proposedDiscountPercentage Int
+  proposedAmount             Int
+  status                     NegotiationStatus @default(PENDING)
+  message                    String?
+  createdAt                  DateTime          @default(now())
+  respondedAt                DateTime?
+  booking                    Booking           @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  @@index([status, createdAt])
+}
+
+model Notification {
+  id             String   @id @default(cuid())
+  recipientId    String
+  bookingId      String?
+  title          String
+  message        String
+  isRead         Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  recipient      User     @relation(fields: [recipientId], references: [id], onDelete: Cascade)
+  booking        Booking? @relation(fields: [bookingId], references: [id], onDelete: SetNull)
+
+  @@index([recipientId, isRead, createdAt])
+  @@index([bookingId])
+}
+model ListingImage {
+  id        String  @id @default(cuid())
+  listingId String
+  url       String
+  listing   Listing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+}
+model Wishlist {
+  id        String   @id @default(cuid())
+  userId    String
+  listingId String
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  listing   Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  @@unique([userId, listingId])
+}
