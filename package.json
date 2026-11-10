@@ -9,11 +9,13 @@
     "dev:client": "vite --host 0.0.0.0",
     "build": "vite build",
     "test:stage2": "node --env-file=.env server/run-stage2-tests.js",
+    "test:stage3": "node --env-file=.env server/run-stage3-tests.js",
     "test:auth-domain": "node --test server/email-policy.test.js",
     "admin:create": "node --env-file=.env server/create-admin.js",
     "start": "node --env-file=.env server/index.js",
     "db:push": "prisma db push",
     "db:stage2": "node --env-file=.env server/apply-stage2-migration.js",
+    "db:stage3": "node --env-file=.env server/apply-stage3-migration.js",
     "db:seed": "node server/seed.js",
     "admin:promote": "node --env-file=.env server/promote-admin.js",
     "postinstall": "prisma generate"

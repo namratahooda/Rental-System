@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { copyFileSync, existsSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient } from '../generated/prisma-client-final/index.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const filename = `stage2-test-${process.pid}.db`;

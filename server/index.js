@@ -8,12 +8,14 @@ import { prisma } from './db.js';
 import { isInstitutionalEmail, normalizeEmail } from './email-policy.js';
 import { clearSession, createSession, optionalAuth, publicUser, requireAdmin, requireAuth } from './auth.js';
 import { createBookingRouter } from './booking-routes.js';
+import { createMarketplaceRouter } from './marketplace-routes.js';
 import { maxReservedQuantity } from './booking-domain.js';
 
 const app = express();
 const port = Number(process.env.PORT || 4000);
 const pendingGoogleExternalRequests = new Map();
 app.use(express.json({ limit: '8mb' })); app.use(cookieParser()); app.use(optionalAuth);
+app.use('/api', createMarketplaceRouter(prisma));
 app.use('/api', createBookingRouter(prisma));
 const cookieOptions = { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', maxAge: 7 * 864e5 };
 const googleCookieOptions = { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', maxAge: 10 * 60 * 1000, path: '/' };
@@ -177,6 +179,7 @@ app.patch('/api/listings/:id', requireAuth, async (req,res,next) => { try {
   const old=await prisma.listing.findUnique({where:{id:req.params.id}});
   if(!old)return res.status(404).json({error:'Listing not found.'});
   if(old.ownerId!==req.user.id&&req.user.role!=='ADMIN')return res.status(403).json({error:'You cannot edit this listing.'});
+  if(old.status==='SOLD')return res.status(409).json({error:'Sold listings cannot be edited.'});
   if(old.status==='REMOVED'&&req.user.role!=='ADMIN')return res.status(404).json({error:'Listing not found.'});
   const d=listingSchema.partial().parse(req.body); const nextType=d.type||old.type; const dailyPrice=d.dailyPrice===undefined?old.dailyPrice:d.dailyPrice; const monthlyPrice=d.monthlyPrice===undefined?old.monthlyPrice:d.monthlyPrice; const salePrice=d.salePrice===undefined?old.salePrice:d.salePrice;
   if(nextType==='RENT'&&!dailyPrice&&!monthlyPrice)return res.status(400).json({error:'Add a daily or monthly rental price.'});
@@ -192,10 +195,10 @@ app.patch('/api/listings/:id', requireAuth, async (req,res,next) => { try {
 }catch(e){next(e);} });
 app.delete('/api/listings/:id', requireAuth, async (req,res,next) => { try {
   const old=await prisma.listing.findUnique({where:{id:req.params.id}});if(!old)return res.status(404).json({error:'Listing not found.'});if(old.ownerId!==req.user.id&&req.user.role!=='ADMIN')return res.status(403).json({error:'You cannot delete this listing.'});
-  if(await prisma.booking.count({where:{listingId:old.id}})){await prisma.listing.update({where:{id:old.id},data:{status:'REMOVED'}});return res.json({ok:true,archived:true});}
+  if(await prisma.booking.count({where:{listingId:old.id}})||await prisma.purchaseRequest.count({where:{listingId:old.id}})){await prisma.listing.update({where:{id:old.id},data:{status:'REMOVED'}});return res.json({ok:true,archived:true});}
   await prisma.listing.delete({where:{id:old.id}});res.json({ok:true});
 }catch(e){next(e);} });
-app.patch('/api/listings/:id/status', requireAuth, async (req,res,next) => {try {const old=await prisma.listing.findUnique({where:{id:req.params.id}});if(!old)return res.status(404).json({error:'Listing not found.'});if(old.ownerId!==req.user.id&&req.user.role!=='ADMIN')return res.status(403).json({error:'You cannot update this listing.'});if(old.status==='REMOVED'&&req.user.role!=='ADMIN')return res.status(404).json({error:'Listing not found.'});const status=z.enum(['ACTIVE','PAUSED']).parse(req.body.status);res.json(await prisma.listing.update({where:{id:old.id},data:{status}}));}catch(e){next(e);} });
+app.patch('/api/listings/:id/status', requireAuth, async (req,res,next) => {try {const old=await prisma.listing.findUnique({where:{id:req.params.id}});if(!old)return res.status(404).json({error:'Listing not found.'});if(old.ownerId!==req.user.id&&req.user.role!=='ADMIN')return res.status(403).json({error:'You cannot update this listing.'});if(old.status==='SOLD')return res.status(409).json({error:'Sold listings cannot be republished.'});if(old.status==='REMOVED'&&req.user.role!=='ADMIN')return res.status(404).json({error:'Listing not found.'});const status=z.enum(['ACTIVE','PAUSED']).parse(req.body.status);res.json(await prisma.listing.update({where:{id:old.id},data:{status}}));}catch(e){next(e);} });
 app.get('/api/wishlist',requireAuth,async(req,res,next)=>{try{res.json(await prisma.wishlist.findMany({where:{userId:req.user.id},include:{listing:safeListing}}));}catch(e){next(e);}});
 app.post('/api/wishlist/:listingId',requireAuth,async(req,res,next)=>{try{res.json(await prisma.wishlist.upsert({where:{userId_listingId:{userId:req.user.id,listingId:req.params.listingId}},create:{userId:req.user.id,listingId:req.params.listingId},update:{}}));}catch(e){next(e);}});
 app.delete('/api/wishlist/:listingId',requireAuth,async(req,res,next)=>{try{await prisma.wishlist.deleteMany({where:{userId:req.user.id,listingId:req.params.listingId}});res.json({ok:true});}catch(e){next(e);}});

@@ -1,6 +1,6 @@
 # Rentol
 
-Rentol is a campus marketplace for renting and reselling useful things within IIIT Allahabad. Stage 1 marketplace and Stage 2 rental booking management are implemented.
+Rentol is a campus marketplace for renting, reselling, subscription sharing and campus transactions within IIIT Allahabad. Stages 1–3 are implemented.
 
 ## Requirements
 
@@ -15,8 +15,9 @@ Rentol is a campus marketplace for renting and reselling useful things within II
 4. Create the SQLite database: `npm run db:push`
 5. Add the marketplace categories: `npm run db:seed`
 6. Apply the additive Stage 2 rental tables: `npm run db:stage2`
-7. Start the frontend and API: `npm run dev`
-8. Open <http://localhost:5173>.
+7. Apply the additive Stage 3 marketplace tables: `npm run db:stage3`
+8. Start the frontend and API: `npm run dev`
+9. Open <http://localhost:5173>.
 
 Public registration always creates a student account. To promote an existing approved account, run `npm run admin:promote -- user@iiita.ac.in`. For initial local setup, `npm run admin:create -- admin@example.com` creates a separate approved administrator account and prompts for its password without echoing it; this command is for trusted project operators only.
 
@@ -65,7 +66,25 @@ Run the regression suite with `npm run test:stage2`. It creates a temporary copy
 3. Sign back in as the renter and inspect the status and notifications. An approved request can be cancelled before its start date.
 4. On or after the start date, the owner marks the item handed over. After the return, the owner confirms it; the completed request remains in rental history.
 
-Sell listings are unchanged. Real payments, purchase transactions, chat, email/SMS, reviews and subscriptions remain out of scope.
+## Stage 3: advanced marketplace and transactions
+
+Sell listings support buyer purchase requests, buyer price offers and seller responses. An accepted purchase is completed only after a successful simulated checkout. Checkout amounts are calculated by the server from the agreed price; clients cannot set a payment amount. Completing a sale updates inventory and marks a zero-stock listing Sold. A sold listing cannot be republished.
+
+Subscription sharing has configurable categories, owner listings, seat requests, owner approval, simulated checkout, membership expiry and seat release. Owners can manage their plans from the Subscriptions dashboard. Administrators can add or deactivate categories through `POST /api/admin/subscription-categories` and `PATCH /api/admin/subscription-categories/:id`.
+
+The dashboard includes Purchases, Subscriptions, Transactions & refunds, Conversations and Reviews. Refund requests are capped at the amount paid; administrators approve, reject or mark the simulated refund processed. Reviews are limited to completed purchase, membership or rental interactions and administrators can hide or restore them. Private conversations are available between listing or subscription participants. Notifications remain recipient-private.
+
+All payment flows are demonstrations stored as transaction records. Rentol does not process money and checkout must not collect payment credentials. Real payment-provider integration, external messaging, email/SMS delivery and dispute handling are out of scope.
+
+Apply Stage 3 after Stage 2 with `npm run db:stage3`. The migration runner applies additive schema changes and supports upgrading the existing one-refund-per-transaction schema to multiple partial refunds without resetting existing Rentol data. Run `npm run test:stage3` for the Stage 1/2 regression and Stage 3 API suites; test data is isolated in a temporary database copy. Run `npm run build` to create the production frontend bundle.
+
+### Manual Stage 3 checks
+
+1. Create a Sell listing as one account, then make a purchase request as another account. Test a price proposal and seller response, and complete checkout using each simulated outcome.
+2. Create a subscription plan, request a seat as another user, approve it as the owner, and test successful, failed and cancelled checkout. Verify seat availability after cancellation and expiry.
+3. Open Transactions & refunds to request a partial refund; use an admin account to approve and mark it processed. Review the transaction status and remaining refundable amount.
+4. Start a conversation from a listing or subscription, send a message from each account, and confirm a third account cannot access it.
+5. Submit a review only after a completed interaction; verify it appears in the owner’s public review summary and can be hidden by an administrator.
 
 ## Notes
 

@@ -56,9 +56,9 @@ class Client {
   }
 }
 
-async function createListing(quantity = 3) {
+async function createListing(quantity = 3, deposit = null) {
   const listing = await prisma.listing.create({
-    data: { ownerId: owner.id, categoryId: category.id, type: 'RENT', title: `Booking API fixture ${testListings.length + 1}`, description: 'Temporary test listing for rental booking checks.', quantity, condition: 'GOOD', dailyPrice: 100, monthlyPrice: 2000, pickupLocation: 'Library' },
+    data: { ownerId: owner.id, categoryId: category.id, type: 'RENT', title: `Booking API fixture ${testListings.length + 1}`, description: 'Temporary test listing for rental booking checks.', quantity, condition: 'GOOD', dailyPrice: 100, monthlyPrice: 2000, deposit, pickupLocation: 'Library' },
   });
   testListings.push(listing.id);
   return listing;
@@ -95,6 +95,7 @@ after(async () => {
     const bookings = await prisma.booking.findMany({ where: { listingId: { in: testListings } }, select: { id: true } });
     const bookingIds = bookings.map((booking) => booking.id);
     await prisma.notification.deleteMany({ where: { OR: [{ recipientId: { in: testUsers } }, { bookingId: { in: bookingIds } }] } });
+    await prisma.depositRecord.deleteMany({ where: { bookingId: { in: bookingIds } } });
     await prisma.booking.deleteMany({ where: { id: { in: bookingIds } } });
     await prisma.listing.deleteMany({ where: { id: { in: testListings } } });
     if (category) await prisma.category.delete({ where: { id: category.id } });
@@ -241,19 +242,23 @@ test('rental booking API enforces availability, authorization, negotiation, life
   });
 
   await t.test('owner starts and completes rentals with recorded return timestamp', async () => {
-    const oneUnit = await createListing(1);
+    const oneUnit = await createListing(1, 400);
     const sameDay = await createRequest(renterClient, oneUnit, { startDate: today, endDate: addDays(today, 1), quantity: 1 });
     assert.equal(sameDay.status, 201);
     testBookings.push(sameDay.data.booking.id);
-    assert.equal((await ownerClient.request(`/bookings/${sameDay.data.booking.id}/approve`, { method: 'POST' })).status, 200);
+    const approved = await ownerClient.request(`/bookings/${sameDay.data.booking.id}/approve`, { method: 'POST' });
+    assert.equal(approved.status, 200);
+    assert.equal(approved.data.booking.depositRecord.amount, 400, 'deposit is recorded separately from the rental price');
     const active = await ownerClient.request(`/bookings/${sameDay.data.booking.id}/activate`, { method: 'POST' });
     assert.equal(active.status, 200);
     assert.equal(active.data.booking.status, 'ACTIVE');
     assert.equal((await outsiderClient.request(`/bookings/${sameDay.data.booking.id}/complete`, { method: 'POST' })).status, 403);
-    const completed = await ownerClient.request(`/bookings/${sameDay.data.booking.id}/complete`, { method: 'POST' });
+    const completed = await ownerClient.request(`/bookings/${sameDay.data.booking.id}/complete`, { method: 'POST', body: { deductionAmount: 100, deductionReason: 'Minor cleaning' } });
     assert.equal(completed.status, 200);
     assert.equal(completed.data.booking.status, 'COMPLETED');
     assert.ok(completed.data.booking.completedAt);
+    assert.equal(completed.data.booking.depositRecord.status, 'DEDUCTED');
+    assert.equal(completed.data.booking.depositRecord.deductionAmount, 100);
     assert.equal((await renterClient.request(`/bookings/${sameDay.data.booking.id}`)).data.status, 'COMPLETED');
     assert.ok((await renterClient.request('/bookings')).data.some((booking) => booking.id === sameDay.data.booking.id && booking.status === 'COMPLETED'), 'completed bookings remain in rental history');
     const afterReturn = await ownerClient.request(`/listings/${oneUnit.id}/availability?from=${today}&to=${addDays(today, 1)}`);

@@ -1,4 +1,7 @@
 node_modules/
+generated/prisma/
+generated/prisma-client/
+generated/prisma-client-final/
 dist/
 .env
 prisma/*.db

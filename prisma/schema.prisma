@@ -1,5 +1,6 @@
 generator client {
   provider = "prisma-client-js"
+  output   = "../generated/prisma-client-final"
 }
 datasource db {
   provider = "sqlite"
@@ -22,6 +23,7 @@ enum ListingStatus {
   ACTIVE
   PAUSED
   REMOVED
+  SOLD
 }
 enum Condition {
   NEW
@@ -48,6 +50,62 @@ enum NegotiationStatus {
   DECLINED
   CANCELLED
 }
+enum PurchaseStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  CANCELLED
+  PAYMENT_PENDING
+  COMPLETED
+}
+enum PurchaseOfferStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+}
+enum SubscriptionListingStatus {
+  ACTIVE
+  PAUSED
+  REMOVED
+}
+enum MembershipStatus {
+  PENDING
+  APPROVED
+  PAYMENT_PENDING
+  ACTIVE
+  REJECTED
+  CANCELLED
+  EXPIRED
+}
+enum TransactionType {
+  PURCHASE
+  SUBSCRIPTION
+  RENTAL_DEPOSIT
+}
+enum TransactionStatus {
+  INITIATED
+  SUCCESS
+  FAILED
+  CANCELLED
+  REFUND_PENDING
+  PARTIALLY_REFUNDED
+  REFUNDED
+}
+enum RefundStatus {
+  REQUESTED
+  APPROVED
+  REJECTED
+  PROCESSED
+}
+enum DepositStatus {
+  HELD
+  RETURNED
+  DEDUCTED
+}
+enum ReviewStatus {
+  VISIBLE
+  HIDDEN
+}
 
 model User {
   id           String   @id @default(cuid())
@@ -68,6 +126,19 @@ model User {
   renterBookings Booking[] @relation("BookingRenter")
   ownerBookings Booking[] @relation("BookingOwner")
   notifications Notification[]
+  purchaseRequests PurchaseRequest[] @relation("PurchaseBuyer")
+  salesRequests PurchaseRequest[] @relation("PurchaseSeller")
+  subscriptionListings SubscriptionListing[]
+  subscriptionMemberships SubscriptionMembership[]
+  transactions Transaction[]
+  refundsRequested Refund[] @relation("RefundRequester")
+  refundsApproved Refund[] @relation("RefundApprover")
+  refundsRejected Refund[] @relation("RefundRejector")
+  refundsProcessed Refund[] @relation("RefundProcessor")
+  reviewsGiven Review[] @relation("ReviewAuthor")
+  reviewsReceived Review[] @relation("ReviewSubject")
+  conversationLinks ConversationParticipant[]
+  messages Message[]
 }
 model ExternalAccessRequest {
   id         String       @id @default(cuid())
@@ -106,6 +177,8 @@ model Listing {
   images        ListingImage[]
   wishlistedBy  Wishlist[]
   bookings      Booking[]
+  purchaseRequests PurchaseRequest[]
+  conversations Conversation[]
   @@index([type, status, createdAt])
   @@index([categoryId])
 }
@@ -134,6 +207,9 @@ model Booking {
   owner           User              @relation("BookingOwner", fields: [ownerId], references: [id], onDelete: Restrict)
   negotiation     Negotiation?
   notifications   Notification[]
+  depositRecord    DepositRecord?
+  transactions     Transaction[]
+  reviews          Review[]
 
   @@unique([renterId, idempotencyKey])
   @@index([listingId, status, startDate, endDate])
@@ -159,16 +235,251 @@ model Notification {
   id             String   @id @default(cuid())
   recipientId    String
   bookingId      String?
+  purchaseRequestId String?
+  membershipId   String?
+  transactionId  String?
+  conversationId String?
   title          String
   message        String
   isRead         Boolean  @default(false)
   createdAt      DateTime @default(now())
   recipient      User     @relation(fields: [recipientId], references: [id], onDelete: Cascade)
   booking        Booking? @relation(fields: [bookingId], references: [id], onDelete: SetNull)
+  purchaseRequest PurchaseRequest? @relation(fields: [purchaseRequestId], references: [id], onDelete: SetNull)
+  membership     SubscriptionMembership? @relation(fields: [membershipId], references: [id], onDelete: SetNull)
+  transaction    Transaction? @relation(fields: [transactionId], references: [id], onDelete: SetNull)
+  conversation   Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
 
   @@index([recipientId, isRead, createdAt])
   @@index([bookingId])
+  @@index([purchaseRequestId])
+  @@index([membershipId])
+  @@index([transactionId])
+  @@index([conversationId])
 }
+
+model PurchaseRequest {
+  id              String         @id @default(cuid())
+  listingId       String
+  buyerId         String
+  sellerId        String
+  originalAmount  Int
+  agreedAmount    Int
+  status          PurchaseStatus @default(PENDING)
+  message         String?
+  offerCount      Int            @default(0)
+  idempotencyKey  String?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  listing         Listing        @relation(fields: [listingId], references: [id], onDelete: Restrict)
+  buyer           User           @relation("PurchaseBuyer", fields: [buyerId], references: [id], onDelete: Restrict)
+  seller          User           @relation("PurchaseSeller", fields: [sellerId], references: [id], onDelete: Restrict)
+  offers          PurchaseOffer[]
+  transactions    Transaction[]
+  notifications   Notification[]
+  reviews         Review[]
+  conversations   Conversation[]
+  @@unique([buyerId, idempotencyKey])
+  @@index([listingId, status, createdAt])
+  @@index([buyerId, status, createdAt])
+  @@index([sellerId, status, createdAt])
+}
+
+model PurchaseOffer {
+  id             String              @id @default(cuid())
+  requestId      String
+  proposedAmount Int
+  message        String?
+  status         PurchaseOfferStatus @default(PENDING)
+  createdAt      DateTime            @default(now())
+  respondedAt    DateTime?
+  request        PurchaseRequest     @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  @@index([requestId, createdAt])
+}
+
+model SubscriptionCategory {
+  id       String @id @default(cuid())
+  name     String @unique
+  slug     String @unique
+  active   Boolean @default(true)
+  listings SubscriptionListing[]
+}
+
+model SubscriptionListing {
+  id             String @id @default(cuid())
+  ownerId        String
+  categoryId     String
+  name           String
+  description    String
+  plan           String
+  totalSeats     Int
+  availableSeats Int
+  durationDays   Int
+  startDate      DateTime
+  expiryDate     DateTime
+  pricePerSeat   Int
+  restrictions   String?
+  terms          String?
+  status         SubscriptionListingStatus @default(ACTIVE)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  owner          User @relation(fields: [ownerId], references: [id], onDelete: Restrict)
+  category       SubscriptionCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  memberships    SubscriptionMembership[]
+  conversations  Conversation[]
+  @@index([status, categoryId, createdAt])
+  @@index([ownerId, status])
+  @@index([expiryDate])
+}
+
+model SubscriptionMembership {
+  id          String @id @default(cuid())
+  listingId   String
+  userId      String
+  amount      Int
+  startDate   DateTime
+  expiryDate  DateTime
+  status      MembershipStatus @default(PENDING)
+  message     String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  listing     SubscriptionListing @relation(fields: [listingId], references: [id], onDelete: Restrict)
+  user        User @relation(fields: [userId], references: [id], onDelete: Restrict)
+  transactions Transaction[]
+  notifications Notification[]
+  reviews Review[]
+  @@unique([listingId, userId])
+  @@index([userId, status, expiryDate])
+  @@index([listingId, status, createdAt])
+}
+
+model Transaction {
+  id                String @id @default(cuid())
+  userId            String
+  purchaseRequestId String?
+  membershipId      String?
+  bookingId         String?
+  type              TransactionType
+  amount            Int
+  currency          String @default("INR")
+  status            TransactionStatus @default(INITIATED)
+  paymentMethod     String @default("SIMULATED")
+  idempotencyKey    String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  user              User @relation(fields: [userId], references: [id], onDelete: Restrict)
+  purchaseRequest   PurchaseRequest? @relation(fields: [purchaseRequestId], references: [id], onDelete: Restrict)
+  membership        SubscriptionMembership? @relation(fields: [membershipId], references: [id], onDelete: Restrict)
+  booking           Booking? @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  refunds           Refund[]
+  notifications     Notification[]
+  reviews           Review[]
+  @@unique([userId, idempotencyKey])
+  @@index([userId, status, createdAt])
+  @@index([purchaseRequestId])
+  @@index([membershipId])
+  @@index([bookingId])
+}
+
+model Refund {
+  id            String @id @default(cuid())
+  transactionId String
+  requestedById String
+  approvedById  String?
+  rejectedById  String?
+  processedById String?
+  amount        Int
+  reason        String
+  rejectionReason String?
+  status        RefundStatus @default(REQUESTED)
+  requestedAt   DateTime @default(now())
+  approvedAt    DateTime?
+  rejectedAt    DateTime?
+  processedAt   DateTime?
+  transaction   Transaction @relation(fields: [transactionId], references: [id], onDelete: Restrict)
+  requestedBy   User @relation("RefundRequester", fields: [requestedById], references: [id], onDelete: Restrict)
+  approvedBy    User? @relation("RefundApprover", fields: [approvedById], references: [id], onDelete: SetNull)
+  rejectedBy     User? @relation("RefundRejector", fields: [rejectedById], references: [id], onDelete: SetNull)
+  processedBy   User? @relation("RefundProcessor", fields: [processedById], references: [id], onDelete: SetNull)
+  @@index([status, requestedAt])
+  @@index([transactionId, status])
+}
+
+model DepositRecord {
+  id              String @id @default(cuid())
+  bookingId       String @unique
+  amount          Int
+  deductionAmount Int @default(0)
+  reason          String?
+  status          DepositStatus @default(HELD)
+  createdAt       DateTime @default(now())
+  completedAt     DateTime?
+  booking         Booking @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+}
+
+model Review {
+  id                       String @id @default(cuid())
+  reviewerId               String
+  reviewedUserId           String
+  interactionKey           String @unique
+  transactionId            String?
+  purchaseRequestId        String?
+  bookingId                String?
+  subscriptionMembershipId String?
+  rating                   Int
+  comment                  String?
+  status                   ReviewStatus @default(VISIBLE)
+  createdAt                DateTime @default(now())
+  reviewer                 User @relation("ReviewAuthor", fields: [reviewerId], references: [id], onDelete: Restrict)
+  reviewedUser             User @relation("ReviewSubject", fields: [reviewedUserId], references: [id], onDelete: Restrict)
+  transaction              Transaction? @relation(fields: [transactionId], references: [id], onDelete: Restrict)
+  purchaseRequest          PurchaseRequest? @relation(fields: [purchaseRequestId], references: [id], onDelete: Restrict)
+  booking                  Booking? @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  subscriptionMembership   SubscriptionMembership? @relation(fields: [subscriptionMembershipId], references: [id], onDelete: Restrict)
+  @@index([reviewedUserId, status, createdAt])
+  @@index([reviewerId, createdAt])
+}
+
+model Conversation {
+  id                    String @id @default(cuid())
+  key                   String @unique
+  relatedListingId      String?
+  purchaseRequestId     String?
+  subscriptionListingId String?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  relatedListing        Listing? @relation(fields: [relatedListingId], references: [id], onDelete: SetNull)
+  purchaseRequest       PurchaseRequest? @relation(fields: [purchaseRequestId], references: [id], onDelete: SetNull)
+  subscriptionListing   SubscriptionListing? @relation(fields: [subscriptionListingId], references: [id], onDelete: SetNull)
+  participants          ConversationParticipant[]
+  messages              Message[]
+  notifications         Notification[]
+  @@index([updatedAt])
+}
+
+model ConversationParticipant {
+  conversationId String
+  userId         String
+  joinedAt       DateTime @default(now())
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user           User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@id([conversationId, userId])
+  @@index([userId, joinedAt])
+}
+
+model Message {
+  id             String @id @default(cuid())
+  conversationId String
+  senderId       String
+  text           String
+  createdAt      DateTime @default(now())
+  readAt         DateTime?
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender         User @relation(fields: [senderId], references: [id], onDelete: Restrict)
+  @@index([conversationId, createdAt])
+  @@index([senderId, createdAt])
+}
+
 model ListingImage {
   id        String  @id @default(cuid())
   listingId String

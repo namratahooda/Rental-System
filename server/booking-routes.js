@@ -23,6 +23,7 @@ const bookingInclude = {
   renter: userView,
   owner: userView,
   negotiation: true,
+  depositRecord: true,
 };
 const requestSchema = z.object({
   startDate: z.string(),
@@ -201,6 +202,7 @@ router.post('/bookings/:id/approve', requireAuth, async (req, res, next) => {
       const updated = await tx.booking.updateMany({ where: { id: current.id, status: 'PENDING' }, data: { status: 'APPROVED', approvedAt: new Date() } });
       if (updated.count !== 1) throw Object.assign(new Error('This booking has already changed.'), { statusCode: 409 });
       await tx.notification.create({ data: { recipientId: current.renterId, bookingId: current.id, title: 'Rental request approved', message: `Your request for ${current.listing.title} was approved.` } });
+      if (current.listing.deposit > 0) await tx.depositRecord.upsert({ where: { bookingId: current.id }, create: { bookingId: current.id, amount: Math.round(current.listing.deposit * current.quantity) }, update: {} });
       return tx.booking.findUnique({ where: { id: current.id }, include: bookingInclude });
     });
     res.json({ booking });
@@ -214,7 +216,7 @@ router.post('/bookings/:id/approve', requireAuth, async (req, res, next) => {
 router.post('/bookings/:id/reject', requireAuth, async (req, res, next) => {
   try {
     const booking = await req.prisma.$transaction(async (tx) => {
-      const current = await tx.booking.findUnique({ where: { id: req.params.id }, include: { listing: true } });
+      const current = await tx.booking.findUnique({ where: { id: req.params.id }, include: { listing: true, depositRecord: true } });
       if (!current) throw Object.assign(new Error('Booking not found.'), { statusCode: 404 });
       if (current.ownerId !== req.user.id && req.user.role !== 'ADMIN') throw Object.assign(new Error('Only the listing owner can reject this request.'), { statusCode: 403 });
       if (!isBookingTransitionAllowed(current.status, 'REJECTED')) throw Object.assign(new Error('Only pending booking requests can be rejected.'), { statusCode: 409 });
@@ -230,12 +232,13 @@ router.post('/bookings/:id/reject', requireAuth, async (req, res, next) => {
 router.post('/bookings/:id/cancel', requireAuth, async (req, res, next) => {
   try {
     const booking = await req.prisma.$transaction(async (tx) => {
-      const current = await tx.booking.findUnique({ where: { id: req.params.id }, include: { listing: true } });
+      const current = await tx.booking.findUnique({ where: { id: req.params.id }, include: { listing: true, depositRecord: true } });
       if (!current) throw Object.assign(new Error('Booking not found.'), { statusCode: 404 });
       if (current.renterId !== req.user.id) throw Object.assign(new Error('Only the renter can cancel this booking.'), { statusCode: 403 });
       if (!isBookingTransitionAllowed(current.status, 'CANCELLED')) throw Object.assign(new Error('This booking can no longer be cancelled.'), { statusCode: 409 });
       if (current.status === 'APPROVED' && current.startDate <= new Date()) throw Object.assign(new Error('Approved bookings can only be cancelled before their start date.'), { statusCode: 409 });
       await updateBookingState(tx, current, 'CANCELLED');
+      if (current.depositRecord?.status === 'HELD') await tx.depositRecord.update({ where: { bookingId: current.id }, data: { status: 'RETURNED', completedAt: new Date() } });
       await tx.negotiation.updateMany({ where: { bookingId: current.id, status: 'PENDING' }, data: { status: 'CANCELLED', respondedAt: new Date() } });
       await tx.notification.create({ data: { recipientId: current.ownerId, bookingId: current.id, title: 'Rental request cancelled', message: `The renter cancelled their request for ${current.listing.title}.` } });
       return tx.booking.findUnique({ where: { id: current.id }, include: bookingInclude });
@@ -263,12 +266,16 @@ router.post('/bookings/:id/activate', requireAuth, async (req, res, next) => {
 router.post('/bookings/:id/complete', requireAuth, async (req, res, next) => {
   try {
     const booking = await req.prisma.$transaction(async (tx) => {
-      const current = await tx.booking.findUnique({ where: { id: req.params.id }, include: { listing: true } });
+      const current = await tx.booking.findUnique({ where: { id: req.params.id }, include: { listing: true, depositRecord: true } });
       if (!current) throw Object.assign(new Error('Booking not found.'), { statusCode: 404 });
       if (current.ownerId !== req.user.id && req.user.role !== 'ADMIN') throw Object.assign(new Error('Only the listing owner can confirm a return.'), { statusCode: 403 });
       if (!isBookingTransitionAllowed(current.status, 'COMPLETED')) throw Object.assign(new Error('Only active rentals can be completed.'), { statusCode: 409 });
       const now = new Date();
+      const depositInput = z.object({ deductionAmount: z.coerce.number().int().min(0).max(2_147_483_647).optional().default(0), deductionReason: z.string().trim().max(500).optional().default('') }).parse(req.body || {});
+      if (current.depositRecord && depositInput.deductionAmount > current.depositRecord.amount) throw Object.assign(new Error('Deposit deduction cannot exceed the held deposit.'), { statusCode: 400 });
+      if (depositInput.deductionAmount > 0 && !depositInput.deductionReason) throw Object.assign(new Error('Add a reason for the deposit deduction.'), { statusCode: 400 });
       await updateBookingState(tx, current, 'COMPLETED', { completedAt: now });
+      if (current.depositRecord) await tx.depositRecord.update({ where: { bookingId: current.id }, data: { deductionAmount: depositInput.deductionAmount, reason: depositInput.deductionReason || null, status: depositInput.deductionAmount > 0 ? 'DEDUCTED' : 'RETURNED', completedAt: now } });
       await tx.notification.create({ data: { recipientId: current.renterId, bookingId: current.id, title: 'Rental returned', message: `${current.listing.title} was marked as returned and complete.` } });
       return tx.booking.findUnique({ where: { id: current.id }, include: bookingInclude });
     });
@@ -322,7 +329,7 @@ router.get('/notifications', requireAuth, async (req, res, next) => {
     const notifications = await req.prisma.notification.findMany({
       where: { recipientId: req.user.id },
       orderBy: { createdAt: 'desc' },
-      include: { booking: { select: { id: true, status: true, listing: { select: { title: true } } } } },
+      include: { booking: { select: { id: true, status: true, listing: { select: { title: true } } } }, purchaseRequest: { select: { id: true } }, membership: { select: { id: true } }, transaction: { select: { id: true } }, conversation: { select: { id: true } } },
     });
     res.json(notifications);
   } catch (error) { next(error); }
