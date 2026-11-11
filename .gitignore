@@ -2,6 +2,7 @@ node_modules/
 generated/prisma/
 generated/prisma-client/
 generated/prisma-client-final/
+generated/prisma-client-stage4/
 dist/
 .env
 prisma/*.db

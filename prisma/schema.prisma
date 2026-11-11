@@ -1,6 +1,6 @@
 generator client {
   provider = "prisma-client-js"
-  output   = "../generated/prisma-client-final"
+  output   = "../generated/prisma-client-stage6"
 }
 datasource db {
   provider = "sqlite"
@@ -106,6 +106,26 @@ enum ReviewStatus {
   VISIBLE
   HIDDEN
 }
+enum NeedRequestType {
+  RENT
+  BUY
+  SUBSCRIPTION
+}
+enum NeedRequestStatus {
+  OPEN
+  OFFERS_RECEIVED
+  OFFER_ACCEPTED
+  FULFILLED
+  EXPIRED
+  CANCELLED
+}
+enum NeedOfferStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  WITHDRAWN
+  EXPIRED
+}
 
 model User {
   id           String   @id @default(cuid())
@@ -114,6 +134,7 @@ model User {
   passwordHash String
   role         Role     @default(STUDENT)
   isApproved   Boolean  @default(true)
+  suspended    Boolean  @default(false)
   profilePhoto String?
   college      String   @default("IIIT Allahabad")
   department   String?
@@ -139,6 +160,12 @@ model User {
   reviewsReceived Review[] @relation("ReviewSubject")
   conversationLinks ConversationParticipant[]
   messages Message[]
+  auditLogs AuditLog[]
+  reportsFiled MarketplaceReport[] @relation("ReportReporter")
+  reportsReviewed MarketplaceReport[] @relation("ReportReviewer")
+  reportsAgainst MarketplaceReport[] @relation("ReportReportedUser")
+  needRequests NeedRequest[] @relation("NeedRequester")
+  needOffers NeedOffer[] @relation("NeedOfferer")
 }
 model ExternalAccessRequest {
   id         String       @id @default(cuid())
@@ -153,7 +180,61 @@ model Category {
   id       String    @id @default(cuid())
   name     String    @unique
   slug     String    @unique
+  active   Boolean   @default(true)
   listings Listing[]
+  needRequests NeedRequest[]
+}
+
+enum ReportStatus {
+  OPEN
+  UNDER_REVIEW
+  RESOLVED
+  REJECTED
+}
+
+model AuditLog {
+  id              String   @id @default(cuid())
+  administratorId String
+  actionType      String
+  entityType      String
+  entityId        String
+  description     String
+  beforeStatus    String?
+  afterStatus     String?
+  createdAt       DateTime @default(now())
+  administrator  User     @relation(fields: [administratorId], references: [id], onDelete: Restrict)
+  @@index([createdAt])
+  @@index([administratorId, createdAt])
+  @@index([entityType, entityId, createdAt])
+}
+
+model MarketplaceReport {
+  id               String       @id @default(cuid())
+  reporterId       String
+  reportedUserId   String?
+  listingId        String?
+  subscriptionListingId String?
+  transactionId    String?
+  reason           String
+  description      String
+  status           ReportStatus @default(OPEN)
+  adminResponse    String?
+  reviewedById     String?
+  reviewedAt       DateTime?
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+  reporter         User @relation("ReportReporter", fields: [reporterId], references: [id], onDelete: Restrict)
+  reportedUser     User? @relation("ReportReportedUser", fields: [reportedUserId], references: [id], onDelete: SetNull)
+  listing          Listing? @relation(fields: [listingId], references: [id], onDelete: SetNull)
+  subscriptionListing SubscriptionListing? @relation(fields: [subscriptionListingId], references: [id], onDelete: SetNull)
+  transaction      Transaction? @relation(fields: [transactionId], references: [id], onDelete: SetNull)
+  reviewedBy       User? @relation("ReportReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+  @@index([reporterId, createdAt])
+  @@index([status, createdAt])
+  @@index([listingId])
+  @@index([reportedUserId])
+  @@index([subscriptionListingId])
+  @@index([transactionId])
 }
 model Listing {
   id            String        @id @default(cuid())
@@ -177,8 +258,10 @@ model Listing {
   images        ListingImage[]
   wishlistedBy  Wishlist[]
   bookings      Booking[]
+  reports       MarketplaceReport[]
   purchaseRequests PurchaseRequest[]
   conversations Conversation[]
+  needOffers NeedOffer[]
   @@index([type, status, createdAt])
   @@index([categoryId])
 }
@@ -210,6 +293,7 @@ model Booking {
   depositRecord    DepositRecord?
   transactions     Transaction[]
   reviews          Review[]
+  needOffer        NeedOffer? @relation("NeedOfferBooking")
 
   @@unique([renterId, idempotencyKey])
   @@index([listingId, status, startDate, endDate])
@@ -239,6 +323,8 @@ model Notification {
   membershipId   String?
   transactionId  String?
   conversationId String?
+  needRequestId String?
+  needOfferId String?
   title          String
   message        String
   isRead         Boolean  @default(false)
@@ -249,6 +335,8 @@ model Notification {
   membership     SubscriptionMembership? @relation(fields: [membershipId], references: [id], onDelete: SetNull)
   transaction    Transaction? @relation(fields: [transactionId], references: [id], onDelete: SetNull)
   conversation   Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  needRequest NeedRequest? @relation(fields: [needRequestId], references: [id], onDelete: SetNull)
+  needOffer NeedOffer? @relation(fields: [needOfferId], references: [id], onDelete: SetNull)
 
   @@index([recipientId, isRead, createdAt])
   @@index([bookingId])
@@ -256,6 +344,8 @@ model Notification {
   @@index([membershipId])
   @@index([transactionId])
   @@index([conversationId])
+  @@index([needRequestId])
+  @@index([needOfferId])
 }
 
 model PurchaseRequest {
@@ -265,6 +355,7 @@ model PurchaseRequest {
   sellerId        String
   originalAmount  Int
   agreedAmount    Int
+  quantity        Int @default(1)
   status          PurchaseStatus @default(PENDING)
   message         String?
   offerCount      Int            @default(0)
@@ -279,6 +370,7 @@ model PurchaseRequest {
   notifications   Notification[]
   reviews         Review[]
   conversations   Conversation[]
+  needOffer NeedOffer? @relation("NeedOfferPurchase")
   @@unique([buyerId, idempotencyKey])
   @@index([listingId, status, createdAt])
   @@index([buyerId, status, createdAt])
@@ -327,6 +419,8 @@ model SubscriptionListing {
   category       SubscriptionCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict)
   memberships    SubscriptionMembership[]
   conversations  Conversation[]
+  reports        MarketplaceReport[]
+  needOffers NeedOffer[]
   @@index([status, categoryId, createdAt])
   @@index([ownerId, status])
   @@index([expiryDate])
@@ -337,6 +431,7 @@ model SubscriptionMembership {
   listingId   String
   userId      String
   amount      Int
+  seatCount   Int @default(1)
   startDate   DateTime
   expiryDate  DateTime
   status      MembershipStatus @default(PENDING)
@@ -348,6 +443,7 @@ model SubscriptionMembership {
   transactions Transaction[]
   notifications Notification[]
   reviews Review[]
+  needOffer NeedOffer? @relation("NeedOfferMembership")
   @@unique([listingId, userId])
   @@index([userId, status, expiryDate])
   @@index([listingId, status, createdAt])
@@ -374,6 +470,7 @@ model Transaction {
   refunds           Refund[]
   notifications     Notification[]
   reviews           Review[]
+  reports           MarketplaceReport[]
   @@unique([userId, idempotencyKey])
   @@index([userId, status, createdAt])
   @@index([purchaseRequestId])
@@ -478,6 +575,73 @@ model Message {
   sender         User @relation(fields: [senderId], references: [id], onDelete: Restrict)
   @@index([conversationId, createdAt])
   @@index([senderId, createdAt])
+}
+
+model NeedRequest {
+  id String @id @default(cuid())
+  requesterId String
+  categoryId String
+  title String
+  description String
+  requestType NeedRequestType
+  quantity Int @default(1)
+  budgetMin Int
+  budgetMax Int
+  startDate DateTime?
+  endDate DateTime?
+  rentalDuration String?
+  desiredCondition Condition?
+  specifications String?
+  subscriptionName String?
+  desiredPlan String?
+  desiredDurationDays Int?
+  seats Int?
+  status NeedRequestStatus @default(OPEN)
+  expiresAt DateTime
+  fulfilledAt DateTime?
+  expiryNoticeSentAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  requester User @relation("NeedRequester", fields: [requesterId], references: [id], onDelete: Cascade)
+  category Category @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  offers NeedOffer[]
+  notifications Notification[]
+  @@index([status, requestType, categoryId, createdAt])
+  @@index([requesterId, status, createdAt])
+  @@index([expiresAt, status])
+}
+
+model NeedOffer {
+  id String @id @default(cuid())
+  requestId String
+  offererId String
+  listingId String?
+  subscriptionListingId String?
+  offeredPrice Int
+  availableStartDate DateTime?
+  availableEndDate DateTime?
+  quantity Int @default(1)
+  condition Condition?
+  message String?
+  terms String?
+  status NeedOfferStatus @default(PENDING)
+  bookingId String? @unique
+  purchaseRequestId String? @unique
+  membershipId String? @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  request NeedRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  offerer User @relation("NeedOfferer", fields: [offererId], references: [id], onDelete: Cascade)
+  listing Listing? @relation(fields: [listingId], references: [id], onDelete: SetNull)
+  subscriptionListing SubscriptionListing? @relation(fields: [subscriptionListingId], references: [id], onDelete: SetNull)
+  booking Booking? @relation("NeedOfferBooking", fields: [bookingId], references: [id], onDelete: SetNull)
+  purchaseRequest PurchaseRequest? @relation("NeedOfferPurchase", fields: [purchaseRequestId], references: [id], onDelete: SetNull)
+  membership SubscriptionMembership? @relation("NeedOfferMembership", fields: [membershipId], references: [id], onDelete: SetNull)
+  notifications Notification[]
+  @@unique([requestId, offererId, listingId])
+  @@unique([requestId, offererId, subscriptionListingId])
+  @@index([requestId, status, createdAt])
+  @@index([offererId, status, createdAt])
 }
 
 model ListingImage {

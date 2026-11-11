@@ -1,5 +1,15 @@
 # Changelog
 
+## Stage 4 — administration and release preparation
+
+- Added central administrator console, user activity details, external access review, account suspension/reactivation, listing moderation and category controls.
+- Added rental, purchase/subscription, simulated transaction/refund, report and administrator audit views.
+- Added private listing/user/subscription/transaction reports with an administrator resolution workflow and reporter notifications.
+- Added database-backed range-filtered analytics, including category/type summaries and activity time series. Metrics label simulated amounts and state their active-user definition.
+- Added additive Prisma/SQLite migration, isolated Stage 4 API tests and updated setup, admin, deployment, maintenance and traceability documentation.
+- Added startup validation for SQLite database URL, listener port, production HTTPS origin and paired Google OAuth configuration.
+- Fixed suspension to preserve access approval, safe analytics JSON serialization, and test fixture cleanup for new audit foreign keys.
+
 ## 1.0.0 — Stage 1 foundation
 
 - Added responsive campus marketplace, category browsing, listing detail, dashboard and account screens.

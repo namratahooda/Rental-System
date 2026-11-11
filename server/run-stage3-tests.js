@@ -2,13 +2,12 @@ import { spawnSync } from 'node:child_process';
 import { copyFileSync, existsSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
-import { PrismaClient } from '../generated/prisma-client-final/index.js';
+import { prisma as sourcePrisma } from './db.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const filename = `stage3-test-${process.pid}.db`;
 const databaseFile = join(root, 'prisma', filename);
 const childEnv = { ...process.env, DATABASE_URL: `file:./${filename}`, NODE_ENV: 'test' };
-const sourcePrisma = new PrismaClient();
 let exitCode = 1;
 try {
   await sourcePrisma.$queryRawUnsafe('PRAGMA wal_checkpoint(FULL)');
@@ -18,7 +17,7 @@ try {
   await sourcePrisma.$disconnect();
   for (const suffix of ['', '-journal', '-shm', '-wal']) { const path = databaseFile + suffix; if (existsSync(path)) rmSync(path, { force: true }); }
   copyFileSync(sourceFile, databaseFile);
-  const run = spawnSync(process.execPath, ['--test', '--test-concurrency=1', 'server/email-policy.test.js', 'server/booking-domain.test.js', 'server/booking-api.test.js', 'server/marketplace-api.test.js'], { cwd: root, env: childEnv, stdio: 'inherit' });
+  const run = spawnSync(process.execPath, ['--test', '--test-concurrency=1', 'server/config.test.js', 'server/email-policy.test.js', 'server/booking-domain.test.js', 'server/notification-domain.test.js', 'server/booking-api.test.js', 'server/marketplace-api.test.js', 'server/admin-api.test.js', 'server/looking-for-api.test.js'], { cwd: root, env: childEnv, stdio: 'inherit' });
   exitCode = run.status ?? 1;
 } catch (error) { console.error(error.message); }
 finally {

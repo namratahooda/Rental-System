@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { prisma } from './db.js';
 
-const migrations = ['20261110_stage3_marketplace', '20261110_stage3_refunds', '20261110_stage3_refund_review'];
+const migrations = ['20261110_stage3_marketplace', '20261110_stage3_refunds', '20261110_stage3_refund_review', '20261110_stage4_admin', '20261110_stage5_looking_for', '20261110_stage6_need_workflows'];
 
 try {
   await prisma.$transaction(async (tx) => {
@@ -24,7 +24,7 @@ try {
       await tx.$executeRawUnsafe('INSERT INTO "_RentolMigration" ("id") VALUES (?)', migrationId);
     }
   });
-  console.log(`Applied Stage 3 migrations without resetting existing Rentol data.`);
+  console.log(`Applied additive marketplace migrations without resetting existing Rentol data.`);
 } finally {
   await prisma.$disconnect();
 }

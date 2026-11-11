@@ -1,8 +1,8 @@
-# Rentol Stage 1 Status
+# Rentol Project Status — Looking For feature (Stages 1–6)
 
 ## Summary
 
-Stage 1 marketplace and Stage 2 date-based rental booking workflows are implemented against SQLite/Prisma. The existing Rentol editorial design and palette were retained. Stage 3 purchase/payment and messaging workflows remain deferred.
+Stages 1–4 are implemented against SQLite/Prisma for the local application. Stage 4 adds an administrator console, reporting, audit history, account suspension, operational oversight and database-backed analytics while retaining the existing Rentol design. The project is not deployed to a public host.
 
 ## Completed
 
@@ -16,8 +16,9 @@ Stage 1 marketplace and Stage 2 date-based rental booking workflows are implemen
 - Student dashboard with profile, listing management, wishlist, rental/sale totals and quick add action.
 - Administrator overview statistics, access review, user suspension/reactivation, listing moderation and server-side role checks.
 - Local-only administrator account creation and promotion commands; public registration cannot grant the administrator role.
-- Stage 3 Subscriptions is hidden from categories and rejected by listing endpoints.
+- Stage 3 purchase requests, simulated transactions/refunds, subscriptions, seat memberships, reviews and private conversations.
 - Stage 2 booking calendar, booking requests, owner approval/rejection, status lifecycle, structured discount proposals, database-backed notifications, rental history and return confirmation.
+- Looking For reverse marketplace for rent, buy and subscription requests, with private offers, expiry, notifications and transactional handoff into the existing booking, purchase and membership flows.
 
 ## Verification
 
@@ -54,3 +55,22 @@ Stage 1 marketplace and Stage 2 date-based rental booking workflows are implemen
 ## Stage 2 readiness
 
 Core Stage 1 and Stage 2 API workflows pass. Before deployment or a public launch, configure and perform a live Google OAuth login, visually inspect the responsive UI, and move sessions and images to durable production services. Rental bookings currently use SQLite and server-local sessions; do not run multiple API instances with SQLite for concurrent production booking traffic without moving to a database with robust cross-process transaction handling.
+
+## Stage 4 additions and verification
+
+- Central `/admin` console for user/access management, listing/category moderation, rental oversight, purchase/subscription oversight, transactions/refunds, reports, audit history and analytics.
+- Added additive Stage 4 migration for separate account suspension, category availability, MarketplaceReport, and AuditLog. Applied locally through `npm run db:stage4`; existing records were preserved.
+- Reports are visible to their reporter and administrators; administrators update status and response, notify reporters, and create audit records.
+- User suspension no longer changes external access approval. Admin API prevents self-suspension and suspension of the last active administrator.
+- Analytics use database counts/grouping and SQLite date buckets; active user means approved and non-suspended, while actual login activity is not tracked. Simulated totals are not revenue.
+- `npm run test:stage2`: 20 passed. `npm run test:stage4`: 42 passed, including Looking For end-to-end rental, purchase and subscription flows. `npm run test:auth-domain`: 2 passed.
+- `npx prisma validate`: passed. `npm run build`: passed.
+- Production-mode local API smoke: startup succeeded with temporary HTTPS origin/callback settings; `/api/auth/me` returned 200 and unauthenticated admin API returned 401. No database writes were made and no deployment occurred.
+- Responsive behavior has CSS breakpoints but no browser visual checks were executed. Full browser E2E, performance benchmark and deployment were not completed.
+
+## Looking For additions
+
+- Additive migrations `20261110_stage5_looking_for` and `20261110_stage6_need_workflows` were applied locally without resetting existing data.
+- Discovery and request detail routes are `/looking-for` and `/looking-for/:id`; the dashboard is `/dashboard/looking-for`. The main navigation includes Explore All, Rent, Lend, Sell, Looking For and Subscriptions.
+- `npm run test:stage4` passes 42 tests; `npm run test:stage2` passes 20; `npm run test:auth-domain` passes 2; Prisma validation and the production build pass.
+- Expiry notifications are checked lazily during Looking For reads and offer actions; no background scheduler is configured. Browser visual testing has not been performed.

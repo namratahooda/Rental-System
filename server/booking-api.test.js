@@ -99,6 +99,8 @@ after(async () => {
     await prisma.booking.deleteMany({ where: { id: { in: bookingIds } } });
     await prisma.listing.deleteMany({ where: { id: { in: testListings } } });
     if (category) await prisma.category.delete({ where: { id: category.id } });
+    await prisma.auditLog.deleteMany({ where: { administratorId: { in: testUsers } } });
+    await prisma.marketplaceReport.deleteMany({ where: { OR: [{ reporterId: { in: testUsers } }, { reportedUserId: { in: testUsers } }] } });
     await prisma.user.deleteMany({ where: { id: { in: testUsers } } });
     await prisma.user.deleteMany({ where: { email: { in: testEmails } } });
   } finally {
@@ -287,6 +289,11 @@ test('rental booking API enforces availability, authorization, negotiation, life
     const ownerNotes = await ownerClient.request('/notifications');
     const note = ownerNotes.data.find((row) => row.bookingId === initialBooking.id);
     assert.ok(note);
+    const page = await ownerClient.request('/notifications?paged=1&limit=10&offset=0');
+    assert.equal(page.status, 200);
+    assert.equal(page.data.items.find((row) => row.id === note.id).category, 'RENTALS');
+    assert.equal(page.data.items.find((row) => row.id === note.id).priority, 'HIGH');
+    assert.equal(page.data.counts.highPriorityUnread > 0, true);
     assert.equal((await outsiderClient.request(`/notifications/${note.id}/read`, { method: 'PATCH' })).status, 404);
     assert.equal((await ownerClient.request(`/notifications/${note.id}/read`, { method: 'PATCH' })).status, 200);
     const persisted = await ownerClient.request('/notifications');

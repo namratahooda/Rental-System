@@ -2,14 +2,13 @@ import { spawnSync } from 'node:child_process';
 import { copyFileSync, existsSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
-import { PrismaClient } from '../generated/prisma-client-final/index.js';
+import { prisma as sourcePrisma } from './db.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const filename = `stage2-test-${process.pid}.db`;
 const databaseFile = join(root, 'prisma', filename);
 const databaseUrl = `file:./${filename}`;
 const childEnv = { ...process.env, DATABASE_URL: databaseUrl, NODE_ENV: 'test' };
-const sourcePrisma = new PrismaClient();
 let exitCode = 1;
 
 try {

@@ -64,6 +64,8 @@ after(async () => {
     await prisma.subscriptionMembership.deleteMany({ where: { id: { in: testMemberships } } });
     await prisma.subscriptionListing.deleteMany({ where: { ownerId: { in: Object.values(users || {}).map((u) => u.id) } } });
     await prisma.listing.deleteMany({ where: { id: { in: testListings } } });
+    await prisma.auditLog.deleteMany({ where: { administratorId: { in: Object.values(users || {}).map((u) => u.id) } } });
+    await prisma.marketplaceReport.deleteMany({ where: { OR: [{ reporterId: { in: Object.values(users || {}).map((u) => u.id) } }, { reportedUserId: { in: Object.values(users || {}).map((u) => u.id) } }] } });
     await prisma.user.deleteMany({ where: { id: { in: Object.values(users || {}).map((u) => u.id) } } });
     await prisma.user.deleteMany({ where: { email: { in: testEmails } } });
   } finally { await new Promise((resolve) => server?.close(resolve)); await prisma.$disconnect(); }
@@ -278,6 +280,8 @@ test('Stage 3 purchase, subscription, transaction, refund, review, and messaging
     assert.equal((await clients.buyer.request('/reviews', { method: 'POST', body: { interactionType: 'PURCHASE', interactionId: tx.purchaseRequestId, rating: 4 } })).status, 409);
     const summary = await clients.owner.request(`/users/${users.owner.id}/reviews`);
     assert.equal(summary.data.count, 2); assert.equal(summary.data.average, 4.5);
+    assert.deepEqual(summary.data.distribution, { 1: 0, 2: 0, 3: 0, 4: 1, 5: 1 });
+    assert.equal(summary.data.reviews.some((row) => row.comment === 'Smooth campus handoff.'), true);
     assert.equal((await clients.admin.request(`/admin/reviews/${review.data.review.id}`, { method: 'PATCH', body: { status: 'HIDDEN' } })).status, 200);
     assert.equal((await clients.owner.request(`/users/${users.owner.id}/reviews`)).data.count, 1, 'only the hidden review is removed from the public summary');
   });

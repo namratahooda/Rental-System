@@ -2,6 +2,8 @@ import express from 'express';
 import crypto from 'node:crypto';
 import { z } from 'zod';
 import { requireAuth } from './auth.js';
+import { classifyNotification, orderNotifications } from './notification-domain.js';
+import { fulfillNeedOffer } from './need-routes.js';
 import {
   calculateDailyAvailability,
   calculateProposal,
@@ -275,6 +277,8 @@ router.post('/bookings/:id/complete', requireAuth, async (req, res, next) => {
       if (current.depositRecord && depositInput.deductionAmount > current.depositRecord.amount) throw Object.assign(new Error('Deposit deduction cannot exceed the held deposit.'), { statusCode: 400 });
       if (depositInput.deductionAmount > 0 && !depositInput.deductionReason) throw Object.assign(new Error('Add a reason for the deposit deduction.'), { statusCode: 400 });
       await updateBookingState(tx, current, 'COMPLETED', { completedAt: now });
+      const acceptedNeedOffer = await tx.needOffer.findUnique({ where: { bookingId: current.id }, select: { id: true } });
+      if (acceptedNeedOffer) await fulfillNeedOffer(tx, acceptedNeedOffer.id);
       if (current.depositRecord) await tx.depositRecord.update({ where: { bookingId: current.id }, data: { deductionAmount: depositInput.deductionAmount, reason: depositInput.deductionReason || null, status: depositInput.deductionAmount > 0 ? 'DEDUCTED' : 'RETURNED', completedAt: now } });
       await tx.notification.create({ data: { recipientId: current.renterId, bookingId: current.id, title: 'Rental returned', message: `${current.listing.title} was marked as returned and complete.` } });
       return tx.booking.findUnique({ where: { id: current.id }, include: bookingInclude });
@@ -326,12 +330,31 @@ router.patch('/bookings/:id/negotiation', requireAuth, async (req, res, next) =>
 
 router.get('/notifications', requireAuth, async (req, res, next) => {
   try {
-    const notifications = await req.prisma.notification.findMany({
-      where: { recipientId: req.user.id },
-      orderBy: { createdAt: 'desc' },
-      include: { booking: { select: { id: true, status: true, listing: { select: { title: true } } } }, purchaseRequest: { select: { id: true } }, membership: { select: { id: true } }, transaction: { select: { id: true } }, conversation: { select: { id: true } } },
+    const paged = req.query.paged === '1';
+    const limit = paged ? Math.max(1, Math.min(50, Number(req.query.limit) || 20)) : undefined;
+    const offset = paged ? Math.max(0, Number(req.query.offset) || 0) : undefined;
+    const include = { booking: { select: { id: true, status: true, listing: { select: { title: true } } } }, purchaseRequest: { select: { id: true, listing: { select: { title: true } } } }, membership: { select: { id: true, listing: { select: { name: true } } } }, transaction: { select: { id: true, type: true, amount: true, status: true, purchaseRequest: { select: { listing: { select: { title: true } } } }, membership: { select: { listing: { select: { name: true } } } }, refunds: { select: { id: true, status: true, amount: true }, orderBy: { requestedAt: 'desc' }, take: 1 } } }, conversation: { select: { id: true, relatedListing: { select: { title: true } }, subscriptionListing: { select: { name: true } } } }, needRequest: { select: { id: true, title: true, requestType: true } }, needOffer: { select: { id: true, status: true } } };
+    const where = { recipientId: req.user.id };
+    let rows, total = 0, unreadCount = 0, highPriorityUnread = 0;
+    if (paged) {
+      const metadata = await req.prisma.notification.findMany({ where, select: { id: true, title: true, message: true, isRead: true, createdAt: true, needRequestId: true }, orderBy: { createdAt: 'desc' } });
+      total = metadata.length;
+      unreadCount = metadata.filter((row) => !row.isRead).length;
+      highPriorityUnread = metadata.reduce((count, row) => count + (!row.isRead && classifyNotification(row.title, row.message, Boolean(row.needRequestId)).priority === 'HIGH' ? 1 : 0), 0);
+      const ids = orderNotifications(metadata.map((row) => ({ ...row, ...classifyNotification(row.title, row.message, Boolean(row.needRequestId)) }))).slice(offset, offset + limit).map((row) => row.id);
+      const records = ids.length ? await req.prisma.notification.findMany({ where: { ...where, id: { in: ids } }, include }) : [];
+      const byId = new Map(records.map((row) => [row.id, row]));
+      rows = ids.map((id) => byId.get(id)).filter(Boolean);
+    } else {
+      rows = await req.prisma.notification.findMany({ where, orderBy: { createdAt: 'desc' }, include });
+    }
+    const enriched = rows.map((row) => {
+      const { category, priority } = classifyNotification(row.title, row.message, Boolean(row.needRequestId));
+      const relatedName = row.needRequest?.title || row.booking?.listing?.title || row.purchaseRequest?.listing?.title || row.membership?.listing?.name || row.transaction?.purchaseRequest?.listing?.title || row.transaction?.membership?.listing?.name || row.conversation?.relatedListing?.title || row.conversation?.subscriptionListing?.name || null;
+      return { ...row, category, priority, relatedName };
     });
-    res.json(notifications);
+    if (!paged) return res.json(enriched);
+    res.json({ items: enriched, page: { limit, offset, total, hasMore: offset + enriched.length < total }, counts: { unread: unreadCount, highPriorityUnread } });
   } catch (error) { next(error); }
 });
 

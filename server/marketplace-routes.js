@@ -2,6 +2,7 @@ import express from 'express';
 import crypto from 'node:crypto';
 import { z } from 'zod';
 import { requireAdmin, requireAuth } from './auth.js';
+import { fulfillNeedOffer } from './need-routes.js';
 
 const router = express.Router();
 let db;
@@ -40,12 +41,12 @@ function notify(tx, recipientId, title, message, links = {}) {
 function paymentStatus(outcome) { return ({ SUCCESS: 'SUCCESS', FAILED: 'FAILED', CANCELLED: 'CANCELLED' })[outcome]; }
 
 async function expireMemberships(client) {
-  const due = await client.subscriptionMembership.findMany({ where: { status: 'ACTIVE', expiryDate: { lte: new Date() } }, select: { id: true, listingId: true, userId: true, listing: { select: { name: true } } } });
+  const due = await client.subscriptionMembership.findMany({ where: { status: 'ACTIVE', expiryDate: { lte: new Date() } }, select: { id: true, listingId: true, userId: true, seatCount: true, listing: { select: { name: true, totalSeats: true } } } });
   for (const membership of due) {
     await client.$transaction(async (tx) => {
       const changed = await tx.subscriptionMembership.updateMany({ where: { id: membership.id, status: 'ACTIVE', expiryDate: { lte: new Date() } }, data: { status: 'EXPIRED' } });
       if (!changed.count) return;
-      await tx.subscriptionListing.updateMany({ where: { id: membership.listingId, availableSeats: { lt: (await tx.subscriptionListing.findUnique({ where: { id: membership.listingId }, select: { totalSeats: true } }))?.totalSeats ?? 0 } }, data: { availableSeats: { increment: 1 } } });
+      await tx.subscriptionListing.updateMany({ where: { id: membership.listingId, availableSeats: { lte: membership.listing.totalSeats - membership.seatCount } }, data: { availableSeats: { increment: membership.seatCount } } });
       await notify(tx, membership.userId, 'Subscription expired', `Your ${membership.listing.name} membership has expired.`, { membershipId: membership.id });
     });
   }
@@ -103,8 +104,8 @@ router.post('/purchases/:id/accept', requireAuth, async (req, res, next) => {
       if (current.sellerId !== req.user.id && req.user.role !== 'ADMIN') throw failure(403, 'Only the seller can accept this request.');
       if (current.status !== 'PENDING') throw failure(409, 'Only pending purchase requests can be accepted.');
       if (current.listing.status !== 'ACTIVE' || current.listing.quantity < 1) throw failure(409, 'This item is no longer available.');
-      const reserved = await tx.purchaseRequest.count({ where: { listingId: current.listingId, status: { in: ['ACCEPTED', 'PAYMENT_PENDING'] } } });
-      if (reserved >= current.listing.quantity) throw failure(409, 'The remaining item quantity is already reserved for another buyer.');
+      const reserved = await tx.purchaseRequest.aggregate({ where: { listingId: current.listingId, status: { in: ['ACCEPTED', 'PAYMENT_PENDING'] } }, _sum: { quantity: true } });
+      if ((reserved._sum.quantity || 0) + current.quantity > current.listing.quantity) throw failure(409, 'The remaining item quantity is already reserved for another buyer.');
       const changed = await tx.purchaseRequest.updateMany({ where: { id: current.id, status: 'PENDING' }, data: { status: 'ACCEPTED' } });
       if (!changed.count) throw failure(409, 'This request has already changed.');
       await notify(tx, current.buyerId, 'Purchase request accepted', `The seller accepted your request for ${current.listing.title}.`, { purchaseRequestId: current.id });
@@ -274,7 +275,7 @@ router.post('/subscriptions/:id/requests', requireAuth, async (req, res, next) =
       if (listing.availableSeats < 1) throw failure(409, 'No subscription seats remain.');
       const old = await tx.subscriptionMembership.findFirst({ where: { listingId: listing.id, userId: req.user.id }, orderBy: { createdAt: 'desc' } });
       if (old && ['PENDING', 'APPROVED', 'PAYMENT_PENDING', 'ACTIVE'].includes(old.status)) throw failure(409, 'You already have an active request or membership for this subscription.');
-      const data = { listingId: listing.id, userId: req.user.id, amount: listing.pricePerSeat, startDate: listing.startDate > new Date() ? listing.startDate : new Date(), expiryDate: listing.expiryDate, status: 'PENDING', message };
+      const data = { listingId: listing.id, userId: req.user.id, amount: listing.pricePerSeat, seatCount: 1, startDate: listing.startDate > new Date() ? listing.startDate : new Date(), expiryDate: listing.expiryDate, status: 'PENDING', message };
       const created = old ? await tx.subscriptionMembership.update({ where: { id: old.id }, data }) : await tx.subscriptionMembership.create({ data });
       await notify(tx, listing.ownerId, 'New subscription seat request', `${req.user.fullName} requested a seat in ${listing.name}.`, { membershipId: created.id });
       return tx.subscriptionMembership.findUnique({ where: { id: created.id }, include: membershipInclude });
@@ -291,7 +292,7 @@ router.post('/subscriptions/memberships/:id/approve', requireAuth, async (req, r
       if (current.listing.ownerId !== req.user.id && req.user.role !== 'ADMIN') throw failure(403, 'Only the subscription owner can approve seat requests.');
       if (current.status !== 'PENDING') throw failure(409, 'Only pending seat requests can be approved.');
       if (current.listing.expiryDate <= new Date()) throw failure(409, 'This subscription has expired.');
-      const seat = await tx.subscriptionListing.updateMany({ where: { id: current.listingId, status: 'ACTIVE', availableSeats: { gt: 0 } }, data: { availableSeats: { decrement: 1 } } });
+      const seat = await tx.subscriptionListing.updateMany({ where: { id: current.listingId, status: 'ACTIVE', availableSeats: { gte: current.seatCount } }, data: { availableSeats: { decrement: current.seatCount } } });
       if (!seat.count) throw failure(409, 'No seats remain.');
       const updated = await tx.subscriptionMembership.updateMany({ where: { id: current.id, status: 'PENDING' }, data: { status: 'APPROVED' } });
       if (!updated.count) throw failure(409, 'This request has already changed.');
@@ -326,7 +327,7 @@ router.post('/subscriptions/memberships/:id/cancel', requireAuth, async (req, re
       if (!['PENDING', 'APPROVED', 'PAYMENT_PENDING'].includes(current.status)) throw failure(409, 'This membership can no longer be cancelled.');
       const changed = await tx.subscriptionMembership.updateMany({ where: { id: current.id, status: current.status }, data: { status: 'CANCELLED' } });
       if (!changed.count) throw failure(409, 'This membership has already changed.');
-      if (['APPROVED', 'PAYMENT_PENDING'].includes(current.status)) await tx.subscriptionListing.updateMany({ where: { id: current.listingId, availableSeats: { lt: current.listing.totalSeats } }, data: { availableSeats: { increment: 1 } } });
+      if (['APPROVED', 'PAYMENT_PENDING'].includes(current.status)) await tx.subscriptionListing.updateMany({ where: { id: current.listingId, availableSeats: { lte: current.listing.totalSeats - current.seatCount } }, data: { availableSeats: { increment: current.seatCount } } });
       await tx.transaction.updateMany({ where: { membershipId: current.id, status: 'INITIATED' }, data: { status: 'CANCELLED' } });
       await notify(tx, current.listing.ownerId, 'Subscription request cancelled', `${req.user.fullName} cancelled their request for ${current.listing.name}.`, { membershipId: current.id });
       return tx.subscriptionMembership.findUnique({ where: { id: current.id }, include: membershipInclude });
@@ -403,7 +404,7 @@ router.post('/transactions/:id/resolve', requireAuth, async (req, res, next) => 
         await tx.transaction.update({ where: { id: current.id }, data: { status: outcome } });
         if (current.membershipId) {
           const changed = await tx.subscriptionMembership.updateMany({ where: { id: current.membershipId, status: 'PAYMENT_PENDING' }, data: { status: 'CANCELLED' } });
-          if (changed.count) await tx.subscriptionListing.updateMany({ where: { id: current.membership.listingId, availableSeats: { lt: current.membership.listing.totalSeats } }, data: { availableSeats: { increment: 1 } } });
+          if (changed.count) await tx.subscriptionListing.updateMany({ where: { id: current.membership.listingId, availableSeats: { lte: current.membership.listing.totalSeats - current.membership.seatCount } }, data: { availableSeats: { increment: current.membership.seatCount } } });
         }
         await notify(tx, current.userId, `Simulated payment ${outcome.toLowerCase()}`, `Transaction ${current.id} was recorded as ${outcome.toLowerCase()}. No real payment was processed.`, { transactionId: current.id, ...(current.purchaseRequestId ? { purchaseRequestId: current.purchaseRequestId } : {}), ...(current.membershipId ? { membershipId: current.membershipId } : {}) });
         return tx.transaction.findUnique({ where: { id: current.id }, include: transactionInclude });
@@ -411,7 +412,7 @@ router.post('/transactions/:id/resolve', requireAuth, async (req, res, next) => 
       if (current.purchaseRequestId) {
         const purchase = current.purchaseRequest;
         if (!purchase || purchase.status !== 'PAYMENT_PENDING' || purchase.listing.status !== 'ACTIVE') throw failure(409, 'This item is no longer available for payment.');
-        const changed = await tx.listing.updateMany({ where: { id: purchase.listingId, type: 'SELL', status: 'ACTIVE', quantity: { gt: 0 } }, data: { quantity: { decrement: 1 } } });
+        const changed = await tx.listing.updateMany({ where: { id: purchase.listingId, type: 'SELL', status: 'ACTIVE', quantity: { gte: purchase.quantity } }, data: { quantity: { decrement: purchase.quantity } } });
         if (!changed.count) throw failure(409, 'The item has already been sold.');
         const listing = await tx.listing.findUnique({ where: { id: purchase.listingId } });
         if (listing.quantity === 0) {
@@ -425,6 +426,8 @@ router.post('/transactions/:id/resolve', requireAuth, async (req, res, next) => 
           }
         }
         await tx.purchaseRequest.update({ where: { id: purchase.id }, data: { status: 'COMPLETED' } });
+        const acceptedNeedOffer = await tx.needOffer.findUnique({ where: { purchaseRequestId: purchase.id }, select: { id: true } });
+        if (acceptedNeedOffer) await fulfillNeedOffer(tx, acceptedNeedOffer.id);
         await tx.transaction.updateMany({ where: { purchaseRequestId: purchase.id, id: { not: current.id }, status: 'INITIATED' }, data: { status: 'CANCELLED' } });
         await notify(tx, purchase.sellerId, 'Purchase completed', `The buyer completed the simulated purchase of ${listing.title}.`, { purchaseRequestId: purchase.id, transactionId: current.id });
       } else if (current.membershipId) {
@@ -432,6 +435,8 @@ router.post('/transactions/:id/resolve', requireAuth, async (req, res, next) => 
         if (!membership || membership.status !== 'PAYMENT_PENDING' || membership.expiryDate <= new Date()) throw failure(409, 'This subscription is no longer available for activation.');
         const changed = await tx.subscriptionMembership.updateMany({ where: { id: membership.id, status: 'PAYMENT_PENDING' }, data: { status: 'ACTIVE' } });
         if (!changed.count) throw failure(409, 'This membership has already changed.');
+        const acceptedNeedOffer = await tx.needOffer.findUnique({ where: { membershipId: membership.id }, select: { id: true } });
+        if (acceptedNeedOffer) await fulfillNeedOffer(tx, acceptedNeedOffer.id);
         await tx.transaction.updateMany({ where: { membershipId: membership.id, id: { not: current.id }, status: 'INITIATED' }, data: { status: 'CANCELLED' } });
         await notify(tx, membership.userId, 'Subscription membership active', `Your ${membership.listing.name} membership is active until ${dateString(membership.expiryDate)}. Rentol does not change external provider accounts.`, { membershipId: membership.id, transactionId: current.id });
         await notify(tx, membership.listing.ownerId, 'Subscription seat activated', `A seat in ${membership.listing.name} is now active.`, { membershipId: membership.id, transactionId: current.id });
@@ -486,16 +491,18 @@ async function reviewRefund(req, res, next) {
           : { status: action, processedById: req.user.id, processedAt: now };
       const changed = await tx.refund.updateMany({ where: { id: current.id, status: current.status }, data });
       if (!changed.count) throw failure(409, 'This refund request has already changed.');
+      let nextTransactionStatus = current.transaction.status;
       if (action === 'PROCESSED' || action === 'REJECTED') {
         const pending = await tx.refund.count({ where: { transactionId: current.transactionId, status: { in: ['REQUESTED', 'APPROVED'] } } });
         const processedAmount = await tx.refund.aggregate({ where: { transactionId: current.transactionId, status: 'PROCESSED' }, _sum: { amount: true } });
         const paidBack = processedAmount._sum.amount || 0;
-        const nextStatus = pending ? 'REFUND_PENDING' : paidBack >= current.transaction.amount ? 'REFUNDED' : paidBack > 0 ? 'PARTIALLY_REFUNDED' : 'SUCCESS';
-        await tx.transaction.update({ where: { id: current.transactionId }, data: { status: nextStatus } });
+        nextTransactionStatus = pending ? 'REFUND_PENDING' : paidBack >= current.transaction.amount ? 'REFUNDED' : paidBack > 0 ? 'PARTIALLY_REFUNDED' : 'SUCCESS';
+        await tx.transaction.update({ where: { id: current.transactionId }, data: { status: nextTransactionStatus } });
       }
       const verb = action === 'APPROVED' ? 'approved' : action === 'REJECTED' ? 'rejected' : 'marked processed';
       const reasonText = rejectionReason ? ` Reason: ${rejectionReason}` : '';
       await notify(tx, current.requestedById, `Simulated refund ${action.toLowerCase()}`, `Your simulated refund request for transaction ${current.transactionId} was ${verb}.${reasonText}`, { transactionId: current.transactionId });
+      if (req.user.role === 'ADMIN') await tx.auditLog.create({ data: { administratorId: req.user.id, actionType: `REFUND_${action}`, entityType: 'Refund', entityId: current.id, description: `${verb[0].toUpperCase()}${verb.slice(1)} simulated refund ${current.id} for transaction ${current.transactionId}; transaction status is ${nextTransactionStatus}.${reasonText}`, beforeStatus: current.status, afterStatus: action } });
       return tx.refund.findUnique({ where: { id: current.id }, include: refundPeopleInclude });
     });
     res.json({ refund });
@@ -510,8 +517,15 @@ router.get('/admin/refunds', requireAuth, requireAdmin, async (req, res, next) =
 
 router.get('/users/:id/reviews', async (req, res, next) => {
   try {
-    const reviews = await req.prisma.review.findMany({ where: { reviewedUserId: req.params.id, status: 'VISIBLE' }, include: { reviewer: userSummary }, orderBy: { createdAt: 'desc' } });
-    res.json({ average: reviews.length ? reviews.reduce((sum, review) => sum + review.rating, 0) / reviews.length : null, count: reviews.length, reviews });
+    const where = { reviewedUserId: req.params.id, status: 'VISIBLE' };
+    const [aggregate, groups, reviews] = await Promise.all([
+      req.prisma.review.aggregate({ where, _avg: { rating: true }, _count: { _all: true } }),
+      req.prisma.review.groupBy({ by: ['rating'], where, _count: { _all: true } }),
+      req.prisma.review.findMany({ where, include: { reviewer: userSummary }, orderBy: { createdAt: 'desc' }, take: 10 }),
+    ]);
+    const distribution = Object.fromEntries([1, 2, 3, 4, 5].map((rating) => [rating, 0]));
+    groups.forEach((group) => { distribution[group.rating] = group._count._all; });
+    res.json({ average: aggregate._avg.rating, count: aggregate._count._all, distribution, reviews });
   } catch (error) { next(error); }
 });
 router.get('/reviews/mine', requireAuth, async (req, res, next) => {
@@ -548,7 +562,14 @@ router.post('/reviews', requireAuth, async (req, res, next) => {
 router.patch('/admin/reviews/:id', requireAuth, requireAdmin, async (req, res, next) => {
   try {
     const status = z.enum(['VISIBLE', 'HIDDEN']).parse(req.body.status);
-    res.json({ review: await req.prisma.review.update({ where: { id: req.params.id }, data: { status } }) });
+    const review = await req.prisma.$transaction(async (tx) => {
+      const current = await tx.review.findUnique({ where: { id: req.params.id } });
+      if (!current) throw failure(404, 'Review not found.');
+      const updated = await tx.review.update({ where: { id: current.id }, data: { status } });
+      await tx.auditLog.create({ data: { administratorId: req.user.id, actionType: 'REVIEW_MODERATED', entityType: 'Review', entityId: current.id, description: `Changed review visibility from ${current.status} to ${status}.`, beforeStatus: current.status, afterStatus: status } });
+      return updated;
+    });
+    res.json({ review });
   } catch (error) { sendError(res, next, error); }
 });
 
@@ -632,7 +653,26 @@ router.post('/admin/subscription-categories', requireAuth, requireAdmin, async (
   try {
     const name = z.string().trim().min(2).max(80).parse(req.body.name);
     const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
-    res.status(201).json(await req.prisma.subscriptionCategory.create({ data: { name, slug } }));
+    if (!slug) throw failure(400, 'Enter a category name with at least one letter or number.');
+    const category = await req.prisma.$transaction(async (tx) => {
+      const created = await tx.subscriptionCategory.create({ data: { name, slug } });
+      await tx.auditLog.create({ data: { administratorId: req.user.id, actionType: 'CATEGORY_CREATED', entityType: 'SubscriptionCategory', entityId: created.id, description: `Created subscription category “${name}”.`, afterStatus: 'ACTIVE' } });
+      return created;
+    });
+    res.status(201).json(category);
+  } catch (error) { sendError(res, next, error); }
+});
+router.patch('/admin/subscription-categories/:id', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const data = z.object({ name: z.string().trim().min(2).max(80).optional(), active: z.boolean().optional() }).refine((value) => value.name !== undefined || value.active !== undefined).parse(req.body);
+    const old = await req.prisma.subscriptionCategory.findUnique({ where: { id: req.params.id } });
+    if (!old) throw failure(404, 'Subscription category not found.');
+    const category = await req.prisma.$transaction(async (tx) => {
+      const updated = await tx.subscriptionCategory.update({ where: { id: old.id }, data: { ...data, ...(data.name ? { slug: data.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') } : {}) } });
+      await tx.auditLog.create({ data: { administratorId: req.user.id, actionType: 'CATEGORY_UPDATED', entityType: 'SubscriptionCategory', entityId: old.id, description: `Updated subscription category “${old.name}”.`, beforeStatus: old.active ? 'ACTIVE' : 'INACTIVE', afterStatus: updated.active ? 'ACTIVE' : 'INACTIVE' } });
+      return updated;
+    });
+    res.json(category);
   } catch (error) { sendError(res, next, error); }
 });
 

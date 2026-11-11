@@ -13,7 +13,7 @@ export async function optionalAuth(req, res, next) {
     const session = sessions.get(token);
     if (!session || session.expiresAt < Date.now()) { if (token) sessions.delete(token); return next(); }
     req.user = await prisma.user.findUnique({ where: { id: session.userId } });
-    if (req.user && !req.user.isApproved) req.user = null;
+    if (req.user && (!req.user.isApproved || req.user.suspended)) req.user = null;
     next();
   } catch (error) { next(error); }
 }

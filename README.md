@@ -1,6 +1,6 @@
 # Rentol
 
-Rentol is a campus marketplace for renting, reselling, subscription sharing and campus transactions within IIIT Allahabad. Stages 1–3 are implemented.
+Rentol is a campus marketplace for renting, reselling, subscription sharing and campus transactions within IIIT Allahabad. Stages 1–4 are implemented for the current local application; public deployment still needs production infrastructure and browser review.
 
 ## Requirements
 
@@ -10,14 +10,12 @@ Rentol is a campus marketplace for renting, reselling, subscription sharing and 
 ## Run locally
 
 1. Copy `.env.example` to `.env` only if you do not already have a local `.env`. The server admits only valid addresses ending exactly in `@iiita.ac.in`; this rule is enforced in backend code and is not configurable through `.env`.
-2. To enable Google sign-in, create an OAuth 2.0 Web client in Google Cloud. Add the callback URI from `GOOGLE_CALLBACK_URL` (default `http://localhost:4000/api/auth/google/callback`) to its authorized redirect URIs, then set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` in `.env`. Google sign-in accepts verified campus accounts directly; other domains enter the existing administrator approval flow.
-3. Install dependencies: `npm install`
-4. Create the SQLite database: `npm run db:push`
-5. Add the marketplace categories: `npm run db:seed`
-6. Apply the additive Stage 2 rental tables: `npm run db:stage2`
-7. Apply the additive Stage 3 marketplace tables: `npm run db:stage3`
-8. Start the frontend and API: `npm run dev`
-9. Open <http://localhost:5173>.
+2. Install dependencies: `npm install`.
+3. For a **fresh database**, run `npm run db:push` once to create the current complete schema, then `npm run db:seed`. Do not run the incremental Stage 2–4 migration commands after `db:push` on that same fresh database.
+4. For an **existing Stage 1 database**, apply `npm run db:stage2`, then `npm run db:stage5` (the latter applies the additive Stage 3–6 migrations). Back up the SQLite database before doing this.
+5. To enable Google sign-in, create an OAuth 2.0 Web client in Google Cloud. Add the callback URI from `GOOGLE_CALLBACK_URL` (default `http://localhost:4000/api/auth/google/callback`) to its authorized redirect URIs, then set both `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` in `.env`. Google sign-in accepts verified campus accounts directly; other domains enter administrator approval.
+6. Start the frontend and API: `npm run dev`.
+7. Open <http://localhost:5173>.
 
 Public registration always creates a student account. To promote an existing approved account, run `npm run admin:promote -- user@iiita.ac.in`. For initial local setup, `npm run admin:create -- admin@example.com` creates a separate approved administrator account and prompts for its password without echoing it; this command is for trusted project operators only.
 
@@ -85,6 +83,55 @@ Apply Stage 3 after Stage 2 with `npm run db:stage3`. The migration runner appli
 3. Open Transactions & refunds to request a partial refund; use an admin account to approve and mark it processed. Review the transaction status and remaining refundable amount.
 4. Start a conversation from a listing or subscription, send a message from each account, and confirm a third account cannot access it.
 5. Submit a review only after a completed interaction; verify it appears in the owner’s public review summary and can be hidden by an administrator.
+
+## Stage 4: administration, analytics and release preparation
+
+Administrators can open the central console at `/admin` or use **Manage community** from the administrator overview. The API rechecks the administrator role for every `/api/admin/*` endpoint. The console includes users and access requests, listing moderation, category activation/rename, rental oversight, purchase and subscription oversight, simulated transaction/refund history, report handling, audit history, and time-filtered analytics.
+
+Approved access and account suspension are separate database fields. Suspending an account no longer changes its external access approval state. Admins cannot suspend themselves or suspend the last active administrator. Listing removal and category deactivation preserve their related marketplace records. User reports can be submitted from listing, subscription and transaction pages; the reporter can see only their own reports, while administrators can review and update reports. A status update notifies the reporter and creates an audit entry.
+
+Analytics come from SQLite/Prisma counts, grouped queries and date-bucket SQL queries. “Active users” means approved, non-suspended accounts, not recent sessions. The current schema stores rental and lending listings under one `RENT` type, so the dashboard labels that combined count as “Rent / lend.” Payment totals are explicitly simulated and are not revenue.
+
+Stage 4 migration `prisma/migrations/20261110_stage4_admin/migration.sql` adds account suspension, category availability, report and audit tables, and indexes without deleting existing marketplace rows. Apply it with `npm run db:stage4`; this command also checks/applies the prior additive Stage 3 migrations. Back up the SQLite file before applying migrations to a deployment database.
+
+`npm run test:stage4` (or `npm run test:stage3`) runs the Stage 4 admin integration tests alongside the existing Stage 1–3 API and domain suites, using a disposable copy of the configured database. `npm run test:stage2`, `npm run test:auth-domain`, `npx prisma validate`, and `npm run build` are additional checks. These tests are API integration tests; they do not constitute full browser-based E2E, penetration testing, or responsive visual review.
+
+## Looking For: reverse marketplace
+
+Users can post a need to rent or buy an item, or find a subscription seat. Community members offer existing Rentol listings; request owners compare, reject, or accept offers. Accepting an offer creates the existing Stage 2 booking request, Stage 3 purchase request, or subscription membership. The original request is marked fulfilled only when that workflow is completed (rental return, successful simulated purchase, or membership activation).
+
+The discovery page is `/looking-for`; request details are `/looking-for/:id`; a signed-in user's requests and sent offers are at `/dashboard/looking-for`. APIs are authenticated for mutations and user scoped for private offers: `GET /api/needs`, `POST /api/needs`, `GET /api/needs/mine`, `GET /api/needs/:id`, `POST /api/needs/:id/offers`, `POST /api/needs/:id/offers/:offerId/accept|reject|withdraw`, and `POST /api/needs/:id/cancel`. Request expiry defaults to 30 days and can be set to 7–90 days with `LOOKING_FOR_EXPIRY_DAYS`. Posting is limited to five requests per user per day. Apply the additive migrations with `npm run db:stage5`; this command preserves existing marketplace data.
+
+`npm run test:stage4` includes Looking For integration tests for request validation and privacy, cancellation and expiry, competing offers, and end-to-end rental, purchase, and subscription completion.
+
+### Stage 4 API reference
+
+All endpoints below are under `/api`. Every `/admin/*` route requires a logged-in administrator; report submission and `/reports/mine` require a logged-in user.
+
+- Users and access: `GET /admin/users`, `GET /admin/users/:id`, `GET /admin/requests`, `PATCH /admin/requests/:id`, `PATCH /admin/users/:id/status`
+- Listings and categories: `GET /admin/listings`, `PATCH /admin/listings/:id/moderation`, `GET /admin/categories`, `PATCH /admin/categories/:id`, `GET /admin/subscription-categories`, `POST /admin/subscription-categories`, `PATCH /admin/subscription-categories/:id`
+- Rentals and marketplace: `GET /admin/bookings`, `GET /admin/marketplace` (purchases, subscription plans and memberships)
+- Transactions and reports: `GET /admin/transactions`, `GET /admin/reports`, `PATCH /admin/reports/:id`, `POST /reports`, `GET /reports/mine`
+- Audit and analytics: `GET /admin/audit?limit=200&actionType=...&entityType=...&adminId=...`, `GET /admin/analytics?range=7d|30d|90d|all&category=...&type=RENT|SELL`
+
+The backend validates account suspension, allowed moderation/report states and report targets. Admin mutations write audit records in the same database transaction. The application validates `DATABASE_URL`, `PORT`, production `CLIENT_ORIGIN`, HTTPS production origins and paired Google OAuth credentials at startup.
+
+### Administrator guide
+
+1. Create an administrator through the trusted local operator command, `npm run admin:create -- admin@example.com`, or promote an existing approved account with `npm run admin:promote -- user@iiita.ac.in`.
+2. Log in and open `/admin`. Review external access requests from **Users & access**. Suspend/reactivate accounts from the same area; the API preserves access approval separately.
+3. Moderate listings by setting them active, paused or removed. Sold listings cannot be restored. Disable a category to prevent it being selected for new listings while preserving its history.
+4. Review reports and write a resolution before saving a terminal status. The reporter receives an in-app notification.
+5. Treat the transaction/refund panel as a simulated record. No payment or refund is transmitted to a bank or payment provider.
+6. Use audit history to review administrator changes. It stores action metadata and status changes, not passwords or tokens.
+
+### Deployment and maintenance status
+
+No hosting provider or production credentials are configured. Deploy behind a same-origin HTTPS reverse proxy that routes `/api` to the Express server and serves the Vite `dist` bundle with SPA fallback. Set production `DATABASE_URL`, `PORT`, `CLIENT_ORIGIN`, and Google OAuth values if Google login is enabled; register the production callback URL in Google Cloud. Keep `.env` private (`.env` and `.env.*` are ignored; `.env.example` is safe). The current API has in-memory sessions and SQLite; use a durable shared session store and a transactional production database before multi-instance deployment. Back up the database before migrations and test restoration on a copy. Uploaded image data is currently persisted in SQLite; production deployments should move image storage to managed object storage.
+
+Operational maintenance: review access/report queues, audit important administrator actions, monitor API errors without logging credentials, back up the database on a schedule, test restores, apply additive migrations after backup, and update dependencies regularly. Real payment integration, advanced dispute management, email/SMS delivery and multi-instance production scaling remain future work.
+
+For the current default `DATABASE_URL="file:./dev.db"`, Prisma stores the SQLite file at `prisma/dev.db`. Stop the API before copying it. A PowerShell backup can be made with `Copy-Item prisma\dev.db prisma\dev.db.backup`; to restore, first preserve the current file, then copy the selected verified backup over `prisma\dev.db` and restart the API. Resolve the actual database path from `DATABASE_URL` before using these examples with a different configuration. `db:push` returned a schema-engine error in the current Windows workspace during earlier inspection; the configured existing database was upgraded with the additive migration runner. That local limitation is recorded in `PROJECT_STATUS.md` and should be investigated before relying on `db:push` for a new deployment database.
 
 ## Notes
 
