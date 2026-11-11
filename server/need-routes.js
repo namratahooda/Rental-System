@@ -48,8 +48,15 @@ const requestSchema = z.object({
 const offerSchema = z.object({
   listingId: z.string().optional(), subscriptionListingId: z.string().optional(), offeredPrice: z.coerce.number().int().positive().max(2147483647),
   availableStartDate: z.string().optional(), availableEndDate: z.string().optional(), quantity: z.coerce.number().int().min(1).max(500),
+  itemTitle: blankToUndefined(z.string().trim().min(3, 'Please enter an item title.').max(120)),
+  itemDescription: blankToUndefined(z.string().trim().min(10, 'Please describe your item in at least 10 characters.').max(2000)),
+  pickupLocation: blankToUndefined(z.string().trim().min(2, 'Please enter a pickup location.').max(120)),
   condition: z.enum(['NEW','LIKE_NEW','GOOD','FAIR']).optional(), message: z.string().trim().max(1000).optional(), terms: z.string().trim().max(1000).optional(),
-}).superRefine((d, ctx) => { if (Boolean(d.listingId) === Boolean(d.subscriptionListingId)) ctx.addIssue({ code: 'custom', message: 'Choose one existing listing to offer.' }); });
+}).superRefine((d, ctx) => {
+  const hasDirectItem = Boolean(d.itemTitle || d.itemDescription || d.pickupLocation);
+  if ([Boolean(d.listingId), Boolean(d.subscriptionListingId), hasDirectItem].filter(Boolean).length !== 1) ctx.addIssue({ code: 'custom', message: 'Choose one existing listing or provide the details of one item to offer.' });
+  if (hasDirectItem && (!d.itemTitle || !d.itemDescription || !d.pickupLocation || !d.condition)) ctx.addIssue({ code: 'custom', message: 'Enter the item title, description, condition, and pickup location.' });
+});
 
 async function expireOld(client, requesterId) {
   const soon = await client.needRequest.findMany({ where: { ...(requesterId ? { requesterId } : {}), status: { in: ['OPEN','OFFERS_RECEIVED'] }, expiryNoticeSentAt: null, expiresAt: { gt: new Date(), lte: new Date(Date.now() + 86400000) } }, select: { id: true, requesterId: true, title: true } });
@@ -152,10 +159,11 @@ router.post('/needs/:id/offers',requireAuth,async(req,res,next)=>{
       if(d.quantity<r.quantity)throw fail(400,'Offer quantity is below the requested quantity.');
       let listing=null,plan=null;
       if(r.requestType==='SUBSCRIPTION'){
+        if(!d.subscriptionListingId)throw fail(400,'Choose a subscription plan to offer.');
         plan=await tx.subscriptionListing.findUnique({where:{id:d.subscriptionListingId},include:{category:true}});
         if(!plan||plan.ownerId!==req.user.id||plan.status!=='ACTIVE'||plan.expiryDate<=new Date())throw fail(404,'Choose an active subscription listing you own.');
         if(plan.availableSeats<r.seats||plan.durationDays<r.desiredDurationDays||plan.pricePerSeat*r.seats>r.budgetMax||r.subscriptionName&&!plan.name.toLowerCase().includes(r.subscriptionName.toLowerCase()))throw fail(400,'Subscription listing does not meet the requested plan, duration, seats or budget.');
-      }else{
+      }else if(d.listingId){
         listing=await tx.listing.findUnique({where:{id:d.listingId}});
         const kind=r.requestType==='RENT'?'RENT':'SELL';
         if(!listing||listing.ownerId!==req.user.id||listing.type!==kind||listing.status!=='ACTIVE')throw fail(404,'Choose an active listing of the requested type that you own.');
@@ -168,8 +176,15 @@ router.post('/needs/:id/offers',requireAuth,async(req,res,next)=>{
           const days=calculateDailyAvailability({inventory:listing.quantity,bookings:reserved,from:dateKey(r.startDate),to:dateKey(r.endDate)});
           if(days.some(day=>day.remaining<r.quantity))throw fail(409,'Listing is not available for the requested dates and quantity.');
         }
+      }else{
+        if(!d.itemTitle||!d.itemDescription||!d.pickupLocation||!d.condition)throw fail(400,'Enter the item title, description, condition, and pickup location.');
+        if(r.requestType==='BUY'&&r.desiredCondition){const grade={NEW:4,LIKE_NEW:3,GOOD:2,FAIR:1};if(grade[d.condition]<grade[r.desiredCondition])throw fail(400,'Offered item condition is below the requested condition.');}
+        if(r.requestType==='RENT'){
+          const start=parseDateOnly(d.availableStartDate),end=parseDateOnly(d.availableEndDate);
+          if(!start||!end||start>r.startDate||end<r.endDate)throw fail(400,'Offer dates must cover the requested rental period.');
+        }
       }
-      const offer=await tx.needOffer.create({data:{requestId:r.id,offererId:req.user.id,listingId:listing?.id||null,subscriptionListingId:plan?.id||null,offeredPrice:d.offeredPrice,quantity:d.quantity,availableStartDate:d.availableStartDate?parseDateOnly(d.availableStartDate):null,availableEndDate:d.availableEndDate?parseDateOnly(d.availableEndDate):null,condition:d.condition,message:d.message||null,terms:d.terms||null},include:offerInclude});
+      const offer=await tx.needOffer.create({data:{requestId:r.id,offererId:req.user.id,listingId:listing?.id||null,subscriptionListingId:plan?.id||null,itemTitle:d.itemTitle||null,itemDescription:d.itemDescription||null,pickupLocation:d.pickupLocation||null,offeredPrice:d.offeredPrice,quantity:d.quantity,availableStartDate:d.availableStartDate?parseDateOnly(d.availableStartDate):null,availableEndDate:d.availableEndDate?parseDateOnly(d.availableEndDate):null,condition:d.condition,message:d.message||null,terms:d.terms||null},include:offerInclude});
       await tx.needRequest.update({where:{id:r.id},data:{status:'OFFERS_RECEIVED'}});
       await tx.notification.create({data:{recipientId:r.requesterId,needRequestId:r.id,needOfferId:offer.id,title:'New Looking For offer',message:req.user.fullName+' sent an offer for "'+r.title+'" at ₹'+d.offeredPrice+'.'}});
       return offer;
@@ -207,8 +222,19 @@ router.post('/needs/:id/offers/:offerId/accept',requireAuth,async(req,res,next)=
       const r=o.request;
       if(!['OPEN','OFFERS_RECEIVED'].includes(r.status)||r.expiresAt<=new Date()||o.status!=='PENDING')throw fail(409,'This offer can no longer be accepted.');
       let booking=null,purchaseRequest=null,membership=null;
+      let offeredListing=o.listing;
+      if(r.requestType!=='SUBSCRIPTION'&&!offeredListing&&o.itemTitle&&o.itemDescription&&o.pickupLocation){
+        let dailyPrice=null,salePrice=null;
+        if(r.requestType==='RENT'){
+          const range=validateDateRange(dateKey(r.startDate),dateKey(r.endDate));
+          if(range.error)throw fail(400,range.error);
+          dailyPrice=o.offeredPrice/(r.quantity*range.days);
+        }else salePrice=o.offeredPrice/r.quantity;
+        offeredListing=await tx.listing.create({data:{ownerId:o.offererId,categoryId:r.categoryId,type:r.requestType==='RENT'?'RENT':'SELL',title:o.itemTitle,description:o.itemDescription,quantity:o.quantity,condition:o.condition||'GOOD',dailyPrice,salePrice,pickupLocation:o.pickupLocation,status:'ACTIVE'}});
+        await tx.needOffer.update({where:{id:o.id},data:{listingId:offeredListing.id}});
+      }
       if(r.requestType==='RENT'){
-        const l=o.listing;if(!l||l.ownerId!==o.offererId||l.status!=='ACTIVE')throw fail(409,'Offered rental is no longer available.');
+        const l=offeredListing;if(!l||l.ownerId!==o.offererId||l.status!=='ACTIVE')throw fail(409,'Offered rental is no longer available.');
         const range=validateDateRange(dateKey(r.startDate),dateKey(r.endDate));if(range.error)throw fail(400,range.error);
         const priceUnit=l.dailyPrice!=null?'DAILY':'MONTHLY',pricing=calculateRentalAmount({...range,quantity:r.quantity,priceUnit,dailyPrice:l.dailyPrice,monthlyPrice:l.monthlyPrice});
         const reserved=await tx.booking.findMany({where:{listingId:l.id,status:{in:['APPROVED','ACTIVE']},startDate:{lt:range.endDate},endDate:{gt:range.startDate}},select:{startDate:true,endDate:true,quantity:true}});
@@ -217,7 +243,7 @@ router.post('/needs/:id/offers/:offerId/accept',requireAuth,async(req,res,next)=
         await tx.needOffer.update({where:{id:o.id},data:{bookingId:booking.id}});
         await tx.notification.create({data:{recipientId:l.ownerId,bookingId:booking.id,needRequestId:r.id,needOfferId:o.id,title:'New rental request from Looking For',message:req.user.fullName+' accepted your offer. Review the booking request.'}});
       }else if(r.requestType==='BUY'){
-        const l=o.listing;if(!l||l.ownerId!==o.offererId||l.status!=='ACTIVE'||l.quantity<r.quantity)throw fail(409,'Offered sale listing is no longer available.');
+        const l=offeredListing;if(!l||l.ownerId!==o.offererId||l.status!=='ACTIVE'||l.quantity<r.quantity)throw fail(409,'Offered sale listing is no longer available.');
         purchaseRequest=await tx.purchaseRequest.create({data:{listingId:l.id,buyerId:r.requesterId,sellerId:l.ownerId,quantity:r.quantity,originalAmount:Math.round((l.salePrice||0)*r.quantity),agreedAmount:o.offeredPrice,message:'Accepted Looking For offer '+o.id,idempotencyKey:crypto.randomBytes(24).toString('base64url')}});
         await tx.needOffer.update({where:{id:o.id},data:{purchaseRequestId:purchaseRequest.id}});
         await tx.notification.create({data:{recipientId:l.ownerId,purchaseRequestId:purchaseRequest.id,needRequestId:r.id,needOfferId:o.id,title:'New purchase request from Looking For',message:req.user.fullName+' accepted your offer. Review the purchase request.'}});

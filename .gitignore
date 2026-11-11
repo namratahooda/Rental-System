@@ -3,6 +3,7 @@ generated/prisma/
 generated/prisma-client/
 generated/prisma-client-final/
 generated/prisma-client-stage4/
+generated/prisma-client-stage7/
 dist/
 .env
 prisma/*.db

@@ -517,7 +517,20 @@ router.get('/admin/refunds', requireAuth, requireAdmin, async (req, res, next) =
 
 router.get('/users/:id/reviews', async (req, res, next) => {
   try {
-    const where = { reviewedUserId: req.params.id, status: 'VISIBLE' };
+    const { listingId, subscriptionListingId } = req.query;
+    const scopeFilters = [];
+    if (typeof listingId === 'string' && listingId.trim()) {
+      scopeFilters.push({ purchaseRequest: { is: { listingId: listingId.trim() } } });
+      scopeFilters.push({ booking: { is: { listingId: listingId.trim() } } });
+    }
+    if (typeof subscriptionListingId === 'string' && subscriptionListingId.trim()) {
+      scopeFilters.push({ subscriptionMembership: { is: { listingId: subscriptionListingId.trim() } } });
+    }
+    const where = {
+      reviewedUserId: req.params.id,
+      status: 'VISIBLE',
+      ...(scopeFilters.length ? { OR: scopeFilters } : {}),
+    };
     const [aggregate, groups, reviews] = await Promise.all([
       req.prisma.review.aggregate({ where, _avg: { rating: true }, _count: { _all: true } }),
       req.prisma.review.groupBy({ by: ['rating'], where, _count: { _all: true } }),

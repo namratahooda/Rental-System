@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { prisma } from './db.js';
 
-const migrations = ['20261110_stage3_marketplace', '20261110_stage3_refunds', '20261110_stage3_refund_review', '20261110_stage4_admin', '20261110_stage5_looking_for', '20261110_stage6_need_workflows'];
+const migrations = ['20261110_stage3_marketplace', '20261110_stage3_refunds', '20261110_stage3_refund_review', '20261110_stage4_admin', '20261110_stage5_looking_for', '20261110_stage6_need_workflows', '20261111_stage6_direct_offers'];
 
 try {
   await prisma.$transaction(async (tx) => {

@@ -1,6 +1,6 @@
 generator client {
   provider = "prisma-client-js"
-  output   = "../generated/prisma-client-stage6"
+  output   = "../generated/prisma-client-stage7"
 }
 datasource db {
   provider = "sqlite"
@@ -617,6 +617,9 @@ model NeedOffer {
   offererId String
   listingId String?
   subscriptionListingId String?
+  itemTitle String?
+  itemDescription String?
+  pickupLocation String?
   offeredPrice Int
   availableStartDate DateTime?
   availableEndDate DateTime?
